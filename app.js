@@ -164,16 +164,23 @@ app.post("/teste-iptv", async (req, res) => {
   }
 
   try {
-    const jaExiste = await db.query(
-      "SELECT * FROM testes_iptv WHERE email = $1 OR telefone = $2",
-      [email, telefone]
-    );
+    const EMAIL_LIBERADO = "cleversonleite2014@gmail.com";
+const TELEFONE_LIBERADO = "11951623333";
 
-    if (jaExiste.rows.length > 0) {
-      return res.status(409).json({
-        error: "Este email ou telefone já solicitou um teste grátis."
-      });
-    }
+// Só bloqueia se NÃO for você
+if (email !== EMAIL_LIBERADO && telefone !== TELEFONE_LIBERADO) {
+
+  const jaExiste = await db.query(
+    "SELECT * FROM testes_iptv WHERE email = $1 OR telefone = $2",
+    [email, telefone]
+  );
+
+  if (jaExiste.rows.length > 0) {
+    return res.status(409).json({
+      error: "Este email ou telefone já solicitou um teste grátis."
+    });
+  }
+}
 
     const respostaApi = await fetch(process.env.TESTE_IPTV_API, {
       method: "POST",
