@@ -1,3 +1,4 @@
+import nodemailer from "nodemailer";
 import express from "express";
 import cors from "cors";
 import jwt from "jsonwebtoken";
@@ -196,6 +197,79 @@ app.post("/teste-iptv", async (req, res) => {
 
     res.status(500).json({
       error: "Erro ao gerar teste IPTV"
+    });
+  }
+});
+
+app.post("/teste-iptv", async (req, res) => {
+  const { email, telefone } = req.body;
+
+  if (!email || !telefone) {
+    return res.status(400).json({
+      error: "Email e telefone são obrigatórios."
+    });
+  }
+
+  try {
+    const jaExiste = await db.query(
+      "SELECT * FROM testes_iptv WHERE email = $1 OR telefone = $2",
+      [email, telefone]
+    );
+
+    if (jaExiste.rows.length > 0) {
+      return res.status(409).json({
+        error: "Este email ou telefone já solicitou um teste grátis."
+      });
+    }
+
+    const respostaApi = await fetch(process.env.TESTE_IPTV_API, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        email,
+        telefone
+      })
+    });
+
+    const texto = await respostaApi.text();
+
+    await db.query(
+      "INSERT INTO testes_iptv (email, telefone, resposta) VALUES ($1, $2, $3)",
+      [email, telefone, texto]
+    );
+
+    const transporter = nodemailer.createTransport({
+      service: "gmail",
+      auth: {
+        user: process.env.EMAIL_USER,
+        pass: process.env.EMAIL_PASS
+      }
+    });
+
+    await transporter.sendMail({
+      from: process.env.EMAIL_USER,
+      to: email,
+      subject: "Seu teste grátis SG IPTV",
+      html: `
+        <h2>Seu teste grátis foi gerado!</h2>
+        <p>Segue abaixo os dados retornados pelo painel:</p>
+        <pre>${texto}</pre>
+        <p>Equipe SG IPTV</p>
+      `
+    });
+
+    res.json({
+      ok: true,
+      message: "Teste gerado e enviado para seu email.",
+      resposta: texto
+    });
+
+  } catch (error) {
+    console.error("Erro ao gerar teste IPTV:", error);
+    res.status(500).json({
+      error: "Erro ao gerar teste IPTV."
     });
   }
 });
