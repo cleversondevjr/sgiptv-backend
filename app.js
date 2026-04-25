@@ -2,8 +2,8 @@ import express from "express";
 import cors from "cors";
 import jwt from "jsonwebtoken";
 import { db } from "./db.js";
-
 import pkg from "mercadopago";
+
 const { MercadoPagoConfig, Payment } = pkg;
 
 const client = new MercadoPagoConfig({
@@ -154,6 +154,51 @@ app.post("/webhook", async (req, res) => {
 });
 
 const PORT = process.env.PORT || 4000;
+
+app.post("/teste-iptv", async (req, res) => {
+  const { email, telefone } = req.body;
+
+  if (!email || !telefone) {
+    return res.status(400).json({
+      error: "Email e telefone são obrigatórios"
+    });
+  }
+
+  try {
+    const resposta = await fetch(process.env.TESTE_IPTV_API, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        email,
+        telefone
+      })
+    });
+
+    const texto = await resposta.text();
+
+    let data;
+
+    try {
+      data = JSON.parse(texto);
+    } catch {
+      data = { resposta: texto };
+    }
+
+    res.json({
+      ok: true,
+      data
+    });
+
+  } catch (error) {
+    console.error("Erro ao gerar teste IPTV:", error);
+
+    res.status(500).json({
+      error: "Erro ao gerar teste IPTV"
+    });
+  }
+});
 
 app.listen(PORT, () => {
   console.log("🚀 Backend rodando na porta", PORT);
