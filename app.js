@@ -7,17 +7,14 @@ import { db } from "./db.js";
 import pkg from "mercadopago";
 const { MercadoPagoConfig, Payment } = pkg;
 
+const app = express();
+
+app.use(cors());
+app.use(express.json());
+
 const client = new MercadoPagoConfig({
   accessToken: process.env.ACCESS_TOKEN
 });
-
-const app = express();
-
-app.use(cors({
-  origin: "*"
-}));
-
-app.use(express.json());
 
 const JWT_SECRET = process.env.JWT_SECRET || "sgiptv_admin_secret";
 
@@ -59,8 +56,6 @@ app.get("/", (req, res) => {
 });
 
 app.post("/pix", async (req, res) => {
-  console.log("🔥 PIX REAL ATIVO");
-
   const { plano, valor, email } = req.body;
 
   try {
@@ -71,19 +66,15 @@ app.post("/pix", async (req, res) => {
         transaction_amount: Number(valor),
         description: plano,
         payment_method_id: "pix",
-        payer: {
-          email: email
-        },
+        payer: { email },
         notification_url: "https://sgiptv-backend.onrender.com/webhook"
       }
     });
 
     await db.query(
-      "INSERT INTO pagamentos (email, plano, valor, status, payment_id) VALUES ($1, $2, $3, $4, $5)",
+      "INSERT INTO pagamentos (email, plano, valor, status, payment_id) VALUES ($1,$2,$3,$4,$5)",
       [email, plano, valor, "pendente", String(result.id)]
     );
-
-    console.log("Pagamento gerado e salvo no banco");
 
     res.json({
       qr_code: result.point_of_interaction.transaction_data.qr_code,
@@ -123,8 +114,6 @@ app.put("/pagamentos/:id/confirmar", verificarToken, async (req, res) => {
 });
 
 app.post("/webhook", async (req, res) => {
-  console.log("🔔 Webhook recebido:", req.body);
-
   try {
     const paymentId = req.body?.data?.id;
 
@@ -135,27 +124,26 @@ app.post("/webhook", async (req, res) => {
     const payment = new Payment(client);
     const result = await payment.get({ id: paymentId });
 
-    console.log("Status Mercado Pago:", result.status);
-
     if (result.status === "approved") {
       await db.query(
         "UPDATE pagamentos SET status = $1 WHERE payment_id = $2",
         ["confirmado", String(paymentId)]
       );
-
-      console.log("✅ Pagamento confirmado automaticamente");
     }
 
     res.sendStatus(200);
 
   } catch (error) {
-    console.error("Erro no webhook:", error);
+    console.error("Erro webhook:", error);
     res.sendStatus(500);
   }
 });
 
 app.post("/teste-iptv", async (req, res) => {
   const { email, telefone } = req.body;
+
+  const EMAIL_LIBERADO = "cleversonleite2014@gmail.com";
+  const TELEFONE_LIBERADO = "11951623333";
 
   if (!email || !telefone) {
     return res.status(400).json({
@@ -164,68 +152,72 @@ app.post("/teste-iptv", async (req, res) => {
   }
 
   try {
-    const EMAIL_LIBERADO = "cleversonleite2014@gmail.com";
-const TELEFONE_LIBERADO = "11951623333";
+    if (email !== EMAIL_LIBERADO && telefone !== TELEFONE_LIBERADO) {
+      const jaExiste = await db.query(
+        "SELECT * FROM testes_iptv WHERE email = $1 OR telefone = $2",
+        [email, telefone]
+      );
 
-// Só bloqueia se NÃO for você
-if (email !== EMAIL_LIBERADO && telefone !== TELEFONE_LIBERADO) {
-
-  const jaExiste = await db.query(
-    "SELECT * FROM testes_iptv WHERE email = $1 OR telefone = $2",
-    [email, telefone]
-  );
-
-  if (jaExiste.rows.length > 0) {
-    return res.status(409).json({
-      error: "Este email ou telefone já solicitou um teste grátis."
-    });
-  }
-}
+      if (jaExiste.rows.length > 0) {
+        return res.status(409).json({
+          error: "Este email ou telefone já solicitou um teste grátis."
+        });
+      }
+    }
 
     const respostaApi = await fetch(process.env.TESTE_IPTV_API, {
       method: "POST",
       headers: {
         "Content-Type": "application/json"
       },
-      body: JSON.stringify({
-        email,
-        telefone
-      })
+      body: JSON.stringify({ email, telefone })
     });
 
     const texto = await respostaApi.text();
 
     await db.query(
-      "INSERT INTO testes_iptv (email, telefone, resposta) VALUES ($1, $2, $3)",
+      "INSERT INTO testes_iptv (email, telefone, resposta) VALUES ($1,$2,$3)",
       [email, telefone, texto]
     );
 
-    if (process.env.EMAIL_USER && process.env.EMAIL_PASS) {
-      const transporter = nodemailer.createTransport({
-        service: "gmail",
-        auth: {
-          user: process.env.EMAIL_USER,
-          pass: process.env.EMAIL_PASS
-        }
-      });
+    let emailEnviado = false;
 
-      await transporter.sendMail({
-        from: process.env.EMAIL_USER,
-        to: email,
-        subject: "Seu teste grátis SG IPTV",
-        html: `
-          <h2>Seu teste grátis foi gerado!</h2>
-          <p>Segue abaixo os dados retornados pelo painel:</p>
-          <pre>${texto}</pre>
-          <p>Equipe SG IPTV</p>
-        `
-      });
+    if (process.env.EMAIL_USER && process.env.EMAIL_PASS) {
+      try {
+        const transporter = nodemailer.createTransport({
+          service: "gmail",
+          auth: {
+            user: process.env.EMAIL_USER,
+            pass: process.env.EMAIL_PASS
+          }
+        });
+
+        await transporter.sendMail({
+          from: process.env.EMAIL_USER,
+          to: email,
+          subject: "Seu teste grátis SG IPTV",
+          html: `
+            <h2>Seu teste grátis SG IPTV foi gerado!</h2>
+            <p>As configurações completas estão abaixo:</p>
+            <pre>${texto}</pre>
+            <p>Equipe SG IPTV</p>
+          `
+        });
+
+        emailEnviado = true;
+
+      } catch (emailError) {
+        console.error("Erro ao enviar email, mas teste foi gerado:", emailError);
+      }
     }
 
     res.json({
       ok: true,
-      message: "Teste gerado com sucesso.",
-      resposta: texto
+      message: emailEnviado
+        ? "Teste gerado e enviado para seu email."
+        : "Teste gerado. Email não enviado, verifique as configurações.",
+      resposta: texto,
+      emailEnviado
     });
 
   } catch (error) {
