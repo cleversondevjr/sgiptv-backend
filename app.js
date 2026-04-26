@@ -16,6 +16,8 @@ const client = new MercadoPagoConfig({
 
 const JWT_SECRET = process.env.JWT_SECRET || "sgiptv_admin_secret";
 
+const ADMIN_EMAIL_AVISOS = "suportesgiptv01@gmail.com";
+
 const TESTE_URLS = {
   iptv_com_adulto: "https://prpainel.online/api/chatbot/ywDm7Eb1pR/BV4D3rLaqZ",
   iptv_sem_adulto: "https://prpainel.online/api/chatbot/ywDm7Eb1pR/8241Kg1mxd",
@@ -73,6 +75,91 @@ function escolherUrlTeste(tipoTeste) {
   if (tipoTeste === "p2p") return TESTE_URLS.p2p;
 
   return TESTE_URLS.iptv_com_adulto;
+}
+
+function extrairLoginSenha(texto) {
+  const resposta = limparTextoPainel(texto);
+
+  let login = null;
+  let senha = null;
+
+  const linhas = resposta
+    .split("\n")
+    .map(linha => linha.replace(/\*/g, "").trim())
+    .filter(Boolean);
+
+  for (const linha of linhas) {
+    if (!login) {
+      const loginMatch = linha.match(/^(usu[aá]rio|usuario|login|user)\s*:?\s*(.+)$/i);
+      if (loginMatch) {
+        login = loginMatch[2].trim();
+      }
+    }
+
+    if (!senha) {
+      const senhaMatch = linha.match(/^(senha|password|pass)\s*:?\s*(.+)$/i);
+      if (senhaMatch) {
+        senha = senhaMatch[2].trim();
+      }
+    }
+  }
+
+  if (!login) {
+    const loginUrlMatch = resposta.match(/username=([^&\s\n\r]+)/i);
+    if (loginUrlMatch) {
+      login = loginUrlMatch[1].trim();
+    }
+  }
+
+  if (!senha) {
+    const senhaUrlMatch = resposta.match(/password=([^&\s\n\r]+)/i);
+    if (senhaUrlMatch) {
+      senha = senhaUrlMatch[1].trim();
+    }
+  }
+
+  return {
+    login: login || "Não identificado",
+    senha: senha || "Não identificada"
+  };
+}
+
+function criarTransporterEmail() {
+  if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
+    return null;
+  }
+
+  return nodemailer.createTransport({
+    service: "gmail",
+    auth: {
+      user: process.env.EMAIL_USER,
+      pass: process.env.EMAIL_PASS
+    }
+  });
+}
+
+async function enviarEmailAvisoAdmin({ assunto, html, text }) {
+  try {
+    const transporter = criarTransporterEmail();
+
+    if (!transporter) {
+      console.log("Email admin não enviado: EMAIL_USER ou EMAIL_PASS ausente.");
+      return false;
+    }
+
+    await transporter.sendMail({
+      from: `"SG IPTV" <${process.env.EMAIL_USER}>`,
+      to: ADMIN_EMAIL_AVISOS,
+      subject: assunto,
+      text,
+      html
+    });
+
+    return true;
+  } catch (error) {
+    console.error("Erro ao enviar aviso para admin:", error);
+    return false;
+  }
 }
 
 app.post("/login", (req, res) => {
@@ -136,6 +223,40 @@ app.post("/pix", async (req, res) => {
     );
 
     const data = result.point_of_interaction.transaction_data;
+
+    await enviarEmailAvisoAdmin({
+      assunto: "Novo Pix gerado - SG IPTV",
+      text: `
+Novo Pix gerado
+
+Plano: ${plano}
+Valor: R$ ${valor}
+Email: ${email}
+WhatsApp: ${telefone}
+Status: pendente
+Payment ID: ${paymentId}
+      `,
+      html: `
+        <div style="font-family: Arial, sans-serif; background:#05000f; color:#ffffff; padding:25px;">
+          <div style="max-width:720px; margin:auto; background:#0b0018; border:1px solid #7e22ce; border-radius:14px; padding:25px;">
+            <h2 style="color:#facc15;">Novo Pix gerado</h2>
+
+            <p><strong>Plano:</strong> ${plano}</p>
+            <p><strong>Valor:</strong> R$ ${valor}</p>
+            <p><strong>Email:</strong> ${email}</p>
+            <p><strong>WhatsApp:</strong> ${telefone}</p>
+            <p><strong>Status:</strong> pendente</p>
+            <p><strong>Payment ID:</strong> ${paymentId}</p>
+
+            <hr style="border-color:#7e22ce;">
+
+            <p style="color:#facc15;">
+              O cliente gerou um QR Code Pix. Aguarde o pagamento ou acompanhe pelo painel admin.
+            </p>
+          </div>
+        </div>
+      `
+    });
 
     res.json({
       qr_code: data.qr_code,
@@ -317,6 +438,7 @@ app.post("/teste-iptv", async (req, res) => {
     }
 
     const textoFormatado = extrairMensagemPainel(textoBruto);
+    const dadosTeste = extrairLoginSenha(textoFormatado);
 
     await db.query(
       `
@@ -331,13 +453,7 @@ app.post("/teste-iptv", async (req, res) => {
 
     if (process.env.EMAIL_USER && process.env.EMAIL_PASS) {
       try {
-        const transporter = nodemailer.createTransport({
-          service: "gmail",
-          auth: {
-            user: process.env.EMAIL_USER,
-            pass: process.env.EMAIL_PASS
-          }
-        });
+        const transporter = criarTransporterEmail();
 
         await transporter.sendMail({
           from: `"SG IPTV" <${process.env.EMAIL_USER}>`,
@@ -372,9 +488,41 @@ app.post("/teste-iptv", async (req, res) => {
         emailEnviado = true;
 
       } catch (emailError) {
-        console.error("Erro ao enviar email, mas teste foi gerado:", emailError);
+        console.error("Erro ao enviar email para cliente, mas teste foi gerado:", emailError);
       }
     }
+
+    await enviarEmailAvisoAdmin({
+      assunto: "Novo teste IPTV gerado - SG IPTV",
+      text: `
+Novo teste IPTV gerado
+
+Tipo de teste: ${tipoTeste}
+Email do cliente: ${email}
+WhatsApp do cliente: ${telefone}
+
+Login: ${dadosTeste.login}
+Senha: ${dadosTeste.senha}
+      `,
+      html: `
+        <div style="font-family: Arial, sans-serif; background:#05000f; color:#ffffff; padding:25px;">
+          <div style="max-width:720px; margin:auto; background:#0b0018; border:1px solid #7e22ce; border-radius:14px; padding:25px;">
+            <h2 style="color:#facc15;">Novo teste IPTV gerado</h2>
+
+            <p><strong>Tipo de teste:</strong> ${tipoTeste}</p>
+            <p><strong>Email do cliente:</strong> ${email}</p>
+            <p><strong>WhatsApp do cliente:</strong> ${telefone}</p>
+
+            <div style="background:#020617; border:1px solid #7e22ce; border-radius:12px; padding:15px; margin-top:15px;">
+              <p><strong style="color:#facc15;">Login:</strong> ${dadosTeste.login}</p>
+              <p><strong style="color:#facc15;">Senha:</strong> ${dadosTeste.senha}</p>
+            </div>
+
+            <p style="margin-top:18px; color:#facc15;">Resumo completo salvo no banco.</p>
+          </div>
+        </div>
+      `
+    });
 
     res.json({
       ok: true,
