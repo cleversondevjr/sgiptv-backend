@@ -11,7 +11,7 @@ app.use(cors());
 app.use(express.json());
 
 const client = new MercadoPagoConfig({
-  accessToken: process.env.ACCESS_TOKEN
+  accessToken: process.env.ACCESS_TOKEN?.trim()
 });
 
 const JWT_SECRET = process.env.JWT_SECRET || "sgiptv_admin_secret";
