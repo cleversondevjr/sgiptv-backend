@@ -17,6 +17,7 @@ const client = new MercadoPagoConfig({
 const JWT_SECRET = process.env.JWT_SECRET || "sgiptv_admin_secret";
 
 const ADMIN_EMAIL_AVISOS = "suportesgiptv01@gmail.com";
+const ADMIN_PANEL_URL = "https://sgiptv.com.br/admin.html";
 
 const TESTE_URLS = {
   iptv_com_adulto: "https://prpainel.online/api/chatbot/ywDm7Eb1pR/BV4D3rLaqZ",
@@ -122,6 +123,26 @@ function extrairLoginSenha(texto) {
     login: login || "Não identificado",
     senha: senha || "Não identificada"
   };
+}
+
+function criarBotaoPainelAdmin() {
+  return `
+    <hr style="border-color:#7e22ce; margin:24px 0;">
+
+    <a href="${ADMIN_PANEL_URL}"
+       target="_blank"
+       style="
+         display:inline-block;
+         padding:12px 18px;
+         background:#facc15;
+         color:#000000;
+         text-decoration:none;
+         border-radius:8px;
+         font-weight:bold;
+       ">
+      🔗 Acessar Painel Admin
+    </a>
+  `;
 }
 
 function criarTransporterEmail() {
@@ -235,6 +256,8 @@ Email: ${email}
 WhatsApp: ${telefone}
 Status: pendente
 Payment ID: ${paymentId}
+
+Painel Admin: ${ADMIN_PANEL_URL}
       `,
       html: `
         <div style="font-family: Arial, sans-serif; background:#05000f; color:#ffffff; padding:25px;">
@@ -253,6 +276,8 @@ Payment ID: ${paymentId}
             <p style="color:#facc15;">
               O cliente gerou um QR Code Pix. Aguarde o pagamento ou acompanhe pelo painel admin.
             </p>
+
+            ${criarBotaoPainelAdmin()}
           </div>
         </div>
       `
@@ -503,6 +528,8 @@ WhatsApp do cliente: ${telefone}
 
 Login: ${dadosTeste.login}
 Senha: ${dadosTeste.senha}
+
+Painel Admin: ${ADMIN_PANEL_URL}
       `,
       html: `
         <div style="font-family: Arial, sans-serif; background:#05000f; color:#ffffff; padding:25px;">
@@ -519,6 +546,8 @@ Senha: ${dadosTeste.senha}
             </div>
 
             <p style="margin-top:18px; color:#facc15;">Resumo completo salvo no banco.</p>
+
+            ${criarBotaoPainelAdmin()}
           </div>
         </div>
       `
