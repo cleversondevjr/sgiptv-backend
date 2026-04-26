@@ -98,7 +98,7 @@ app.get("/", (req, res) => {
 });
 
 app.post("/pix", async (req, res) => {
-  const { plano, valor, email, telefone } = req.body;
+  let { plano, valor, email, telefone } = req.body;
 
   if (!valor || !email || !telefone) {
     return res.status(400).json({
@@ -106,13 +106,17 @@ app.post("/pix", async (req, res) => {
     });
   }
 
+  email = String(email).trim().toLowerCase();
+  telefone = String(telefone).replace(/\D/g, "");
+  plano = plano || "Plano SG IPTV";
+
   try {
     const payment = new Payment(client);
 
     const result = await payment.create({
       body: {
         transaction_amount: Number(valor),
-        description: plano || "Plano SG IPTV",
+        description: plano,
         payment_method_id: "pix",
         payer: {
           email
@@ -123,25 +127,20 @@ app.post("/pix", async (req, res) => {
 
     const paymentId = String(result.id);
 
-    try {
-      await db.query(
-        "INSERT INTO pagamentos (email, telefone, plano, valor, status, payment_id) VALUES ($1, $2, $3, $4, $5, $6)",
-        [email, telefone, plano || "Plano SG IPTV", valor, "pendente", paymentId]
-      );
-    } catch (dbError) {
-      console.error("Erro ao salvar telefone. Tentando salvar sem telefone:", dbError.message);
-
-      await db.query(
-        "INSERT INTO pagamentos (email, plano, valor, status, payment_id) VALUES ($1, $2, $3, $4, $5)",
-        [email, plano || "Plano SG IPTV", valor, "pendente", paymentId]
-      );
-    }
+    await db.query(
+      `
+      INSERT INTO pagamentos (email, telefone, plano, valor, status, payment_id)
+      VALUES ($1, $2, $3, $4, $5, $6)
+      `,
+      [email, telefone, plano, valor, "pendente", paymentId]
+    );
 
     const data = result.point_of_interaction.transaction_data;
 
     res.json({
       qr_code: data.qr_code,
-      qr_base64: data.qr_code_base64
+      qr_base64: data.qr_code_base64,
+      payment_id: paymentId
     });
 
   } catch (error) {
@@ -204,6 +203,55 @@ app.post("/webhook", async (req, res) => {
   } catch (error) {
     console.error("Erro webhook:", error);
     res.sendStatus(500);
+  }
+});
+
+app.post("/cliente/consulta", async (req, res) => {
+  let { email, telefone } = req.body;
+
+  if (!email || !telefone) {
+    return res.status(400).json({
+      error: "Informe email e WhatsApp."
+    });
+  }
+
+  email = String(email).trim().toLowerCase();
+  telefone = String(telefone).replace(/\D/g, "");
+
+  try {
+    const result = await db.query(
+      `
+      SELECT *
+      FROM pagamentos
+      WHERE email = $1
+      AND (telefone = $2 OR telefone IS NULL)
+      ORDER BY criado_em DESC, id DESC
+      LIMIT 1
+      `,
+      [email, telefone]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({
+        error: "Nenhum plano encontrado para este email e WhatsApp."
+      });
+    }
+
+    res.json({
+      ok: true,
+      cliente: {
+        email,
+        telefone,
+        ultimoPagamento: result.rows[0]
+      }
+    });
+
+  } catch (error) {
+    console.error("Erro ao consultar cliente:", error);
+
+    res.status(500).json({
+      error: "Erro ao consultar área do cliente."
+    });
   }
 });
 
