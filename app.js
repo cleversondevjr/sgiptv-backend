@@ -92,7 +92,7 @@ app.get("/", (req, res) => {
 });
 
 app.post("/pix", async (req, res) => {
-  const { plano, valor, email } = req.body;
+  const { valor, email, telefone } = req.body;
 
   try {
     const payment = new Payment(client);
@@ -100,7 +100,7 @@ app.post("/pix", async (req, res) => {
     const result = await payment.create({
       body: {
         transaction_amount: Number(valor),
-        description: plano,
+        description: "Plano IPTV",
         payment_method_id: "pix",
         payer: { email },
         notification_url: "https://sgiptv-backend.onrender.com/webhook"
@@ -108,8 +108,8 @@ app.post("/pix", async (req, res) => {
     });
 
     await db.query(
-      "INSERT INTO pagamentos (email, plano, valor, status, payment_id) VALUES ($1, $2, $3, $4, $5)",
-      [email, plano, valor, "pendente", String(result.id)]
+      "INSERT INTO pagamentos (email, telefone, valor, status) VALUES ($1,$2,$3,$4)",
+      [email, telefone, valor, "pendente"]
     );
 
     res.json({
@@ -118,7 +118,6 @@ app.post("/pix", async (req, res) => {
     });
 
   } catch (error) {
-    console.error("Erro ao gerar Pix:", error);
     res.status(500).json({ error: "Erro ao gerar Pix" });
   }
 });
