@@ -72,7 +72,7 @@ app.post("/pix", async (req, res) => {
     });
 
     await db.query(
-      "INSERT INTO pagamentos (email, plano, valor, status, payment_id) VALUES ($1,$2,$3,$4,$5)",
+      "INSERT INTO pagamentos (email, plano, valor, status, payment_id) VALUES ($1, $2, $3, $4, $5)",
       [email, plano, valor, "pendente", String(result.id)]
     );
 
@@ -129,6 +129,8 @@ app.post("/webhook", async (req, res) => {
         "UPDATE pagamentos SET status = $1 WHERE payment_id = $2",
         ["confirmado", String(paymentId)]
       );
+
+      console.log("✅ Pagamento confirmado automaticamente");
     }
 
     res.sendStatus(200);
@@ -140,19 +142,33 @@ app.post("/webhook", async (req, res) => {
 });
 
 app.post("/teste-iptv", async (req, res) => {
-  const { email, telefone } = req.body;
-
-  const EMAIL_LIBERADO = "cleversonleite2014@gmail.com";
-  const TELEFONE_LIBERADO = "11951623333";
+  let { email, telefone } = req.body;
 
   if (!email || !telefone) {
     return res.status(400).json({
-      error: "Email e telefone são obrigatórios."
+      error: "Informe email e WhatsApp para gerar o teste."
     });
   }
 
+  email = String(email).trim().toLowerCase();
+  telefone = String(telefone).replace(/\D/g, "");
+
+  const EMAILS_LIBERADOS = [
+    "suportesgiptv01@gmail.com",
+    "cleversonleite2014@gmail.com"
+  ];
+
+  const TELEFONES_LIBERADOS = [
+    "11919628194",
+    "11951623333"
+  ];
+
+  const liberadoParaTeste =
+    EMAILS_LIBERADOS.includes(email) ||
+    TELEFONES_LIBERADOS.includes(telefone);
+
   try {
-    if (email !== EMAIL_LIBERADO && telefone !== TELEFONE_LIBERADO) {
+    if (!liberadoParaTeste) {
       const jaExiste = await db.query(
         "SELECT * FROM testes_iptv WHERE email = $1 OR telefone = $2",
         [email, telefone]
@@ -160,7 +176,7 @@ app.post("/teste-iptv", async (req, res) => {
 
       if (jaExiste.rows.length > 0) {
         return res.status(409).json({
-          error: "Este email ou telefone já solicitou um teste grátis."
+          error: "Este email ou WhatsApp já solicitou um teste grátis."
         });
       }
     }
@@ -175,8 +191,20 @@ app.post("/teste-iptv", async (req, res) => {
 
     const texto = await respostaApi.text();
 
+    if (!respostaApi.ok) {
+      console.error("Erro API IPTV:", texto);
+
+      return res.status(500).json({
+        error: "O painel IPTV não conseguiu gerar o teste agora."
+      });
+    }
+
     await db.query(
-      "INSERT INTO testes_iptv (email, telefone, resposta) VALUES ($1,$2,$3)",
+      `
+      INSERT INTO testes_iptv (email, telefone, resposta)
+      VALUES ($1, $2, $3)
+      ON CONFLICT DO NOTHING
+      `,
       [email, telefone, texto]
     );
 
@@ -215,13 +243,14 @@ app.post("/teste-iptv", async (req, res) => {
       ok: true,
       message: emailEnviado
         ? "Teste gerado e enviado para seu email."
-        : "Teste gerado. Email não enviado, verifique as configurações.",
+        : "Teste gerado. As configurações aparecerão na tela.",
       resposta: texto,
       emailEnviado
     });
 
   } catch (error) {
     console.error("Erro ao gerar teste IPTV:", error);
+
     res.status(500).json({
       error: "Erro ao gerar teste IPTV."
     });
