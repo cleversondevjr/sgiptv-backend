@@ -91,8 +91,15 @@ app.get("/", (req, res) => {
   res.send("Backend funcionando 🚀");
 });
 
+// ================= PIX =================
 app.post("/pix", async (req, res) => {
   const { valor, email, telefone } = req.body;
+
+  if (!valor || !email || !telefone) {
+    return res.status(400).json({
+      error: "Dados incompletos"
+    });
+  }
 
   try {
     const payment = new Payment(client);
@@ -100,25 +107,32 @@ app.post("/pix", async (req, res) => {
     const result = await payment.create({
       body: {
         transaction_amount: Number(valor),
-        description: "Plano IPTV",
+        description: "Plano SG IPTV",
         payment_method_id: "pix",
-        payer: { email },
+        payer: {
+          email: email
+        },
         notification_url: "https://sgiptv-backend.onrender.com/webhook"
       }
     });
 
-    await db.query(
-      "INSERT INTO pagamentos (email, telefone, valor, status) VALUES ($1,$2,$3,$4)",
-      [email, telefone, valor, "pendente"]
-    );
+    const qr_code =
+      result.point_of_interaction.transaction_data.qr_code;
+
+    const qr_base64 =
+      result.point_of_interaction.transaction_data.qr_code_base64;
 
     res.json({
-      qr_code: result.point_of_interaction.transaction_data.qr_code,
-      qr_base64: result.point_of_interaction.transaction_data.qr_code_base64
+      qr_code,
+      qr_base64
     });
 
   } catch (error) {
-    res.status(500).json({ error: "Erro ao gerar Pix" });
+    console.error("Erro PIX:", error);
+
+    res.status(500).json({
+      error: "Erro ao gerar Pix"
+    });
   }
 });
 
