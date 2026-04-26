@@ -544,3 +544,28 @@ const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => {
   console.log("🚀 Backend rodando na porta", PORT);
 });
+
+app.get("/testes-iptv", verificarToken, async (req, res) => {
+  try {
+    const result = await db.query(`
+      SELECT * FROM testes_iptv
+      ORDER BY id DESC
+    `);
+
+    const lista = result.rows.map(t => {
+      const dados = extrairLoginSenha(t.resposta);
+
+      return {
+        ...t,
+        login: dados.login,
+        senha: dados.senha
+      };
+    });
+
+    res.json(lista);
+
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Erro ao buscar testes" });
+  }
+});
