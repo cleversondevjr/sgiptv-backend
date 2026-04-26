@@ -92,31 +92,23 @@ function extrairLoginSenha(texto) {
   for (const linha of linhas) {
     if (!login) {
       const loginMatch = linha.match(/^(usu[aá]rio|usuario|login|user)\s*:?\s*(.+)$/i);
-      if (loginMatch) {
-        login = loginMatch[2].trim();
-      }
+      if (loginMatch) login = loginMatch[2].trim();
     }
 
     if (!senha) {
       const senhaMatch = linha.match(/^(senha|password|pass)\s*:?\s*(.+)$/i);
-      if (senhaMatch) {
-        senha = senhaMatch[2].trim();
-      }
+      if (senhaMatch) senha = senhaMatch[2].trim();
     }
   }
 
   if (!login) {
     const loginUrlMatch = resposta.match(/username=([^&\s\n\r]+)/i);
-    if (loginUrlMatch) {
-      login = loginUrlMatch[1].trim();
-    }
+    if (loginUrlMatch) login = loginUrlMatch[1].trim();
   }
 
   if (!senha) {
     const senhaUrlMatch = resposta.match(/password=([^&\s\n\r]+)/i);
-    if (senhaUrlMatch) {
-      senha = senhaUrlMatch[1].trim();
-    }
+    if (senhaUrlMatch) senha = senhaUrlMatch[1].trim();
   }
 
   return {
@@ -128,27 +120,14 @@ function extrairLoginSenha(texto) {
 function criarBotaoPainelAdmin() {
   return `
     <hr style="border-color:#7e22ce; margin:24px 0;">
-
-    <a href="${ADMIN_PANEL_URL}"
-       target="_blank"
-       style="
-         display:inline-block;
-         padding:12px 18px;
-         background:#facc15;
-         color:#000000;
-         text-decoration:none;
-         border-radius:8px;
-         font-weight:bold;
-       ">
+    <a href="${ADMIN_PANEL_URL}" target="_blank" style="display:inline-block;padding:12px 18px;background:#facc15;color:#000;text-decoration:none;border-radius:8px;font-weight:bold;">
       🔗 Acessar Painel Admin
     </a>
   `;
 }
 
 function criarTransporterEmail() {
-  if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
-    return null;
-  }
+  if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) return null;
 
   return nodemailer.createTransport({
     service: "gmail",
@@ -186,10 +165,7 @@ async function enviarEmailAvisoAdmin({ assunto, html, text }) {
 app.post("/login", (req, res) => {
   const { usuario, senha } = req.body;
 
-  if (
-    usuario === process.env.ADMIN_USER &&
-    senha === process.env.ADMIN_PASS
-  ) {
+  if (usuario === process.env.ADMIN_USER && senha === process.env.ADMIN_PASS) {
     const token = jwt.sign({ usuario }, JWT_SECRET, { expiresIn: "1d" });
     return res.json({ token });
   }
@@ -209,9 +185,7 @@ app.post("/pix", async (req, res) => {
   let { plano, valor, email, telefone } = req.body;
 
   if (!valor || !email || !telefone) {
-    return res.status(400).json({
-      error: "Informe plano, valor, email e WhatsApp."
-    });
+    return res.status(400).json({ error: "Informe plano, valor, email e WhatsApp." });
   }
 
   email = String(email).trim().toLowerCase();
@@ -226,9 +200,7 @@ app.post("/pix", async (req, res) => {
         transaction_amount: Number(valor),
         description: plano,
         payment_method_id: "pix",
-        payer: {
-          email
-        },
+        payer: { email },
         notification_url: "https://sgiptv-backend.onrender.com/webhook"
       }
     });
@@ -263,20 +235,14 @@ Painel Admin: ${ADMIN_PANEL_URL}
         <div style="font-family: Arial, sans-serif; background:#05000f; color:#ffffff; padding:25px;">
           <div style="max-width:720px; margin:auto; background:#0b0018; border:1px solid #7e22ce; border-radius:14px; padding:25px;">
             <h2 style="color:#facc15;">Novo Pix gerado</h2>
-
             <p><strong>Plano:</strong> ${plano}</p>
             <p><strong>Valor:</strong> R$ ${valor}</p>
             <p><strong>Email:</strong> ${email}</p>
             <p><strong>WhatsApp:</strong> ${telefone}</p>
             <p><strong>Status:</strong> pendente</p>
             <p><strong>Payment ID:</strong> ${paymentId}</p>
-
             <hr style="border-color:#7e22ce;">
-
-            <p style="color:#facc15;">
-              O cliente gerou um QR Code Pix. Aguarde o pagamento ou acompanhe pelo painel admin.
-            </p>
-
+            <p style="color:#facc15;">O cliente gerou um QR Code Pix. Aguarde o pagamento ou acompanhe pelo painel admin.</p>
             ${criarBotaoPainelAdmin()}
           </div>
         </div>
@@ -291,10 +257,7 @@ Painel Admin: ${ADMIN_PANEL_URL}
 
   } catch (error) {
     console.error("Erro PIX:", error);
-
-    res.status(500).json({
-      error: "Erro ao gerar Pix"
-    });
+    res.status(500).json({ error: "Erro ao gerar Pix" });
   }
 });
 
@@ -328,9 +291,7 @@ app.post("/webhook", async (req, res) => {
   try {
     const paymentId = req.body?.data?.id;
 
-    if (!paymentId) {
-      return res.sendStatus(200);
-    }
+    if (!paymentId) return res.sendStatus(200);
 
     const payment = new Payment(client);
     const result = await payment.get({ id: paymentId });
@@ -356,16 +317,14 @@ app.post("/cliente/consulta", async (req, res) => {
   let { email, telefone } = req.body;
 
   if (!email || !telefone) {
-    return res.status(400).json({
-      error: "Informe email e WhatsApp."
-    });
+    return res.status(400).json({ error: "Informe email e WhatsApp." });
   }
 
   email = String(email).trim().toLowerCase();
   telefone = String(telefone).replace(/\D/g, "");
 
   try {
-    const result = await db.query(
+    const pagamentoResult = await db.query(
       `
       SELECT *
       FROM pagamentos
@@ -377,27 +336,62 @@ app.post("/cliente/consulta", async (req, res) => {
       [email, telefone]
     );
 
-    if (result.rows.length === 0) {
-      return res.status(404).json({
-        error: "Nenhum plano encontrado para este email e WhatsApp."
+    if (pagamentoResult.rows.length > 0) {
+      return res.json({
+        ok: true,
+        cliente: {
+          tipoCliente: "pagamento",
+          email,
+          telefone,
+          loginAreaCliente: email,
+          senhaAreaCliente: telefone,
+          ultimoPagamento: pagamentoResult.rows[0],
+          ultimoTeste: null
+        }
       });
     }
 
-    res.json({
+    const testeResult = await db.query(
+      `
+      SELECT *
+      FROM testes_iptv
+      WHERE email = $1
+      AND telefone = $2
+      ORDER BY id DESC
+      LIMIT 1
+      `,
+      [email, telefone]
+    );
+
+    if (testeResult.rows.length === 0) {
+      return res.status(404).json({
+        error: "Nenhum plano ou teste encontrado para este email e WhatsApp."
+      });
+    }
+
+    const teste = testeResult.rows[0];
+    const dadosTeste = extrairLoginSenha(teste.resposta);
+
+    return res.json({
       ok: true,
       cliente: {
+        tipoCliente: "teste",
         email,
         telefone,
-        ultimoPagamento: result.rows[0]
+        loginAreaCliente: email,
+        senhaAreaCliente: telefone,
+        ultimoPagamento: null,
+        ultimoTeste: {
+          ...teste,
+          login: dadosTeste.login,
+          senha: dadosTeste.senha
+        }
       }
     });
 
   } catch (error) {
     console.error("Erro ao consultar cliente:", error);
-
-    res.status(500).json({
-      error: "Erro ao consultar área do cliente."
-    });
+    res.status(500).json({ error: "Erro ao consultar área do cliente." });
   }
 });
 
@@ -405,9 +399,7 @@ app.post("/teste-iptv", async (req, res) => {
   let { email, telefone, tipoTeste } = req.body;
 
   if (!email || !telefone) {
-    return res.status(400).json({
-      error: "Informe email e WhatsApp para gerar o teste."
-    });
+    return res.status(400).json({ error: "Informe email e WhatsApp para gerar o teste." });
   }
 
   email = String(email).trim().toLowerCase();
@@ -446,9 +438,7 @@ app.post("/teste-iptv", async (req, res) => {
 
     const respostaApi = await fetch(urlTeste, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email, telefone })
     });
 
@@ -456,7 +446,6 @@ app.post("/teste-iptv", async (req, res) => {
 
     if (!respostaApi.ok) {
       console.error("Erro API IPTV:", textoBruto);
-
       return res.status(500).json({
         error: "O painel IPTV não conseguiu gerar o teste agora."
       });
@@ -489,22 +478,8 @@ app.post("/teste-iptv", async (req, res) => {
             <div style="font-family: Arial, sans-serif; background:#05000f; color:#ffffff; padding:25px;">
               <div style="max-width:760px; margin:auto; background:#0b0018; border:1px solid #7e22ce; border-radius:14px; padding:25px;">
                 <h2 style="color:#facc15; margin-top:0;">Seu teste grátis SG IPTV foi gerado!</h2>
-
-                <pre style="
-                  white-space:pre-wrap;
-                  word-wrap:break-word;
-                  background:#020617;
-                  color:#ffffff;
-                  border:1px solid #7e22ce;
-                  border-radius:12px;
-                  padding:18px;
-                  font-size:14px;
-                  line-height:1.6;
-                ">${textoFormatado}</pre>
-
-                <p style="color:#facc15; font-weight:bold;">
-                  Equipe SG IPTV
-                </p>
+                <pre style="white-space:pre-wrap;word-wrap:break-word;background:#020617;color:#ffffff;border:1px solid #7e22ce;border-radius:12px;padding:18px;font-size:14px;line-height:1.6;">${textoFormatado}</pre>
+                <p style="color:#facc15; font-weight:bold;">Equipe SG IPTV</p>
               </div>
             </div>
           `
@@ -535,18 +510,14 @@ Painel Admin: ${ADMIN_PANEL_URL}
         <div style="font-family: Arial, sans-serif; background:#05000f; color:#ffffff; padding:25px;">
           <div style="max-width:720px; margin:auto; background:#0b0018; border:1px solid #7e22ce; border-radius:14px; padding:25px;">
             <h2 style="color:#facc15;">Novo teste IPTV gerado</h2>
-
             <p><strong>Tipo de teste:</strong> ${tipoTeste}</p>
             <p><strong>Email do cliente:</strong> ${email}</p>
             <p><strong>WhatsApp do cliente:</strong> ${telefone}</p>
-
             <div style="background:#020617; border:1px solid #7e22ce; border-radius:12px; padding:15px; margin-top:15px;">
               <p><strong style="color:#facc15;">Login:</strong> ${dadosTeste.login}</p>
               <p><strong style="color:#facc15;">Senha:</strong> ${dadosTeste.senha}</p>
             </div>
-
             <p style="margin-top:18px; color:#facc15;">Resumo completo salvo no banco.</p>
-
             ${criarBotaoPainelAdmin()}
           </div>
         </div>
@@ -564,10 +535,7 @@ Painel Admin: ${ADMIN_PANEL_URL}
 
   } catch (error) {
     console.error("Erro ao gerar teste IPTV:", error);
-
-    res.status(500).json({
-      error: "Erro ao gerar teste IPTV."
-    });
+    res.status(500).json({ error: "Erro ao gerar teste IPTV." });
   }
 });
 
