@@ -33,16 +33,40 @@ function verificarToken(req, res, next) {
   }
 }
 
-function formatarRespostaPainel(texto) {
+function limparTextoPainel(texto) {
   return String(texto || "")
     .replace(/\\n/g, "\n")
     .replace(/\\r/g, "")
     .replace(/\\t/g, " ")
+    .replace(/\\\//g, "/")
     .replace(/\\u([0-9a-fA-F]{4})/g, (_, codigo) => {
       return String.fromCharCode(parseInt(codigo, 16));
     })
     .replace(/Equipe Power/gi, "Equipe SG IPTV")
     .trim();
+}
+
+function extrairMensagemPainel(textoBruto) {
+  try {
+    const json = JSON.parse(textoBruto);
+
+    if (json.reply) {
+      return limparTextoPainel(json.reply);
+    }
+
+    if (Array.isArray(json.data) && json.data[0]?.message) {
+      return limparTextoPainel(json.data[0].message);
+    }
+
+    if (json.message) {
+      return limparTextoPainel(json.message);
+    }
+
+    return limparTextoPainel(textoBruto);
+
+  } catch {
+    return limparTextoPainel(textoBruto);
+  }
 }
 
 app.post("/login", (req, res) => {
@@ -211,7 +235,7 @@ app.post("/teste-iptv", async (req, res) => {
       });
     }
 
-    const textoFormatado = formatarRespostaPainel(textoBruto);
+    const textoFormatado = extrairMensagemPainel(textoBruto);
 
     await db.query(
       `
@@ -238,14 +262,11 @@ app.post("/teste-iptv", async (req, res) => {
           from: `"SG IPTV" <${process.env.EMAIL_USER}>`,
           to: email,
           subject: "Seu teste grátis SG IPTV",
+          text: textoFormatado,
           html: `
             <div style="font-family: Arial, sans-serif; background:#05000f; color:#ffffff; padding:25px;">
               <div style="max-width:760px; margin:auto; background:#0b0018; border:1px solid #7e22ce; border-radius:14px; padding:25px;">
                 <h2 style="color:#facc15; margin-top:0;">Seu teste grátis SG IPTV foi gerado!</h2>
-
-                <p style="color:#ffffff;">
-                  Abaixo estão as configurações completas do seu teste.
-                </p>
 
                 <pre style="
                   white-space:pre-wrap;
