@@ -2,10 +2,8 @@ import express from "express";
 import cors from "cors";
 import jwt from "jsonwebtoken";
 import nodemailer from "nodemailer";
+import { MercadoPagoConfig, Payment } from "mercadopago";
 import { db } from "./db.js";
-
-import pkg from "mercadopago";
-const { MercadoPagoConfig, Payment } = pkg;
 
 const app = express();
 
@@ -17,6 +15,12 @@ const client = new MercadoPagoConfig({
 });
 
 const JWT_SECRET = process.env.JWT_SECRET || "sgiptv_admin_secret";
+
+const TESTE_URLS = {
+  iptv_com_adulto: "https://prpainel.online/api/chatbot/ywDm7Eb1pR/BV4D3rLaqZ",
+  iptv_sem_adulto: "https://prpainel.online/api/chatbot/ywDm7Eb1pR/8241Kg1mxd",
+  p2p: "https://prpainel.online/api/chatbot/ywDm7Eb1pR/B0VDVALK3q"
+};
 
 function verificarToken(req, res, next) {
   const token = req.headers.authorization;
@@ -50,23 +54,25 @@ function extrairMensagemPainel(textoBruto) {
   try {
     const json = JSON.parse(textoBruto);
 
-    if (json.reply) {
-      return limparTextoPainel(json.reply);
-    }
+    if (json.reply) return limparTextoPainel(json.reply);
+    if (json.message) return limparTextoPainel(json.message);
 
     if (Array.isArray(json.data) && json.data[0]?.message) {
       return limparTextoPainel(json.data[0].message);
     }
 
-    if (json.message) {
-      return limparTextoPainel(json.message);
-    }
-
     return limparTextoPainel(textoBruto);
-
   } catch {
     return limparTextoPainel(textoBruto);
   }
+}
+
+function escolherUrlTeste(tipoTeste) {
+  if (tipoTeste === "iptv_com_adulto") return TESTE_URLS.iptv_com_adulto;
+  if (tipoTeste === "iptv_sem_adulto") return TESTE_URLS.iptv_sem_adulto;
+  if (tipoTeste === "p2p") return TESTE_URLS.p2p;
+
+  return TESTE_URLS.iptv_com_adulto;
 }
 
 app.post("/login", (req, res) => {
@@ -91,13 +97,12 @@ app.get("/", (req, res) => {
   res.send("Backend funcionando 🚀");
 });
 
-// ================= PIX =================
 app.post("/pix", async (req, res) => {
-  const { valor, email, telefone } = req.body;
+  const { plano, valor, email, telefone } = req.body;
 
   if (!valor || !email || !telefone) {
     return res.status(400).json({
-      error: "Dados incompletos"
+      error: "Informe plano, valor, email e WhatsApp."
     });
   }
 
@@ -107,24 +112,36 @@ app.post("/pix", async (req, res) => {
     const result = await payment.create({
       body: {
         transaction_amount: Number(valor),
-        description: "Plano SG IPTV",
+        description: plano || "Plano SG IPTV",
         payment_method_id: "pix",
         payer: {
-          email: email
+          email
         },
         notification_url: "https://sgiptv-backend.onrender.com/webhook"
       }
     });
 
-    const qr_code =
-      result.point_of_interaction.transaction_data.qr_code;
+    const paymentId = String(result.id);
 
-    const qr_base64 =
-      result.point_of_interaction.transaction_data.qr_code_base64;
+    try {
+      await db.query(
+        "INSERT INTO pagamentos (email, telefone, plano, valor, status, payment_id) VALUES ($1, $2, $3, $4, $5, $6)",
+        [email, telefone, plano || "Plano SG IPTV", valor, "pendente", paymentId]
+      );
+    } catch (dbError) {
+      console.error("Erro ao salvar telefone. Tentando salvar sem telefone:", dbError.message);
+
+      await db.query(
+        "INSERT INTO pagamentos (email, plano, valor, status, payment_id) VALUES ($1, $2, $3, $4, $5)",
+        [email, plano || "Plano SG IPTV", valor, "pendente", paymentId]
+      );
+    }
+
+    const data = result.point_of_interaction.transaction_data;
 
     res.json({
-      qr_code,
-      qr_base64
+      qr_code: data.qr_code,
+      qr_base64: data.qr_code_base64
     });
 
   } catch (error) {
@@ -191,7 +208,7 @@ app.post("/webhook", async (req, res) => {
 });
 
 app.post("/teste-iptv", async (req, res) => {
-  let { email, telefone } = req.body;
+  let { email, telefone, tipoTeste } = req.body;
 
   if (!email || !telefone) {
     return res.status(400).json({
@@ -201,6 +218,7 @@ app.post("/teste-iptv", async (req, res) => {
 
   email = String(email).trim().toLowerCase();
   telefone = String(telefone).replace(/\D/g, "");
+  tipoTeste = tipoTeste || "iptv_com_adulto";
 
   const EMAILS_LIBERADOS = [
     "suportesgiptv01@gmail.com",
@@ -230,7 +248,9 @@ app.post("/teste-iptv", async (req, res) => {
       }
     }
 
-    const respostaApi = await fetch(process.env.TESTE_IPTV_API, {
+    const urlTeste = escolherUrlTeste(tipoTeste);
+
+    const respostaApi = await fetch(urlTeste, {
       method: "POST",
       headers: {
         "Content-Type": "application/json"
