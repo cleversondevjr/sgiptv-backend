@@ -33,6 +33,18 @@ function verificarToken(req, res, next) {
   }
 }
 
+function formatarRespostaPainel(texto) {
+  return String(texto || "")
+    .replace(/\\n/g, "\n")
+    .replace(/\\r/g, "")
+    .replace(/\\t/g, " ")
+    .replace(/\\u([0-9a-fA-F]{4})/g, (_, codigo) => {
+      return String.fromCharCode(parseInt(codigo, 16));
+    })
+    .replace(/Equipe Power/gi, "Equipe SG IPTV")
+    .trim();
+}
+
 app.post("/login", (req, res) => {
   const { usuario, senha } = req.body;
 
@@ -189,15 +201,17 @@ app.post("/teste-iptv", async (req, res) => {
       body: JSON.stringify({ email, telefone })
     });
 
-    const texto = await respostaApi.text();
+    const textoBruto = await respostaApi.text();
 
     if (!respostaApi.ok) {
-      console.error("Erro API IPTV:", texto);
+      console.error("Erro API IPTV:", textoBruto);
 
       return res.status(500).json({
         error: "O painel IPTV não conseguiu gerar o teste agora."
       });
     }
+
+    const textoFormatado = formatarRespostaPainel(textoBruto);
 
     await db.query(
       `
@@ -205,7 +219,7 @@ app.post("/teste-iptv", async (req, res) => {
       VALUES ($1, $2, $3)
       ON CONFLICT DO NOTHING
       `,
-      [email, telefone, texto]
+      [email, telefone, textoFormatado]
     );
 
     let emailEnviado = false;
@@ -221,14 +235,35 @@ app.post("/teste-iptv", async (req, res) => {
         });
 
         await transporter.sendMail({
-          from: process.env.EMAIL_USER,
+          from: `"SG IPTV" <${process.env.EMAIL_USER}>`,
           to: email,
           subject: "Seu teste grátis SG IPTV",
           html: `
-            <h2>Seu teste grátis SG IPTV foi gerado!</h2>
-            <p>As configurações completas estão abaixo:</p>
-            <pre>${texto}</pre>
-            <p>Equipe SG IPTV</p>
+            <div style="font-family: Arial, sans-serif; background:#05000f; color:#ffffff; padding:25px;">
+              <div style="max-width:760px; margin:auto; background:#0b0018; border:1px solid #7e22ce; border-radius:14px; padding:25px;">
+                <h2 style="color:#facc15; margin-top:0;">Seu teste grátis SG IPTV foi gerado!</h2>
+
+                <p style="color:#ffffff;">
+                  Abaixo estão as configurações completas do seu teste.
+                </p>
+
+                <pre style="
+                  white-space:pre-wrap;
+                  word-wrap:break-word;
+                  background:#020617;
+                  color:#ffffff;
+                  border:1px solid #7e22ce;
+                  border-radius:12px;
+                  padding:18px;
+                  font-size:14px;
+                  line-height:1.6;
+                ">${textoFormatado}</pre>
+
+                <p style="color:#facc15; font-weight:bold;">
+                  Equipe SG IPTV
+                </p>
+              </div>
+            </div>
           `
         });
 
@@ -244,7 +279,7 @@ app.post("/teste-iptv", async (req, res) => {
       message: emailEnviado
         ? "Teste gerado e enviado para seu email."
         : "Teste gerado. As configurações aparecerão na tela.",
-      resposta: texto,
+      resposta: textoFormatado,
       emailEnviado
     });
 
