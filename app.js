@@ -92,6 +92,7 @@ const DIAS_PLANO_POR_VALOR = {
 };
 
 const TESTE_DURACAO_HORAS = Number(process.env.TESTE_DURACAO_HORAS || 3);
+const PIX_EXPIRACAO_MINUTOS = Number(process.env.PIX_EXPIRACAO_MINUTOS || 15);
 
 const PLANO_LEGADO_POR_VALOR = {
   "30": "mensal_1_tela",
@@ -173,6 +174,10 @@ function adicionarTempo(data, quantidade, unidade) {
     resultado.setHours(resultado.getHours() + quantidade);
   }
 
+  if (unidade === "minutos") {
+    resultado.setMinutes(resultado.getMinutes() + quantidade);
+  }
+
   return resultado.toISOString();
 }
 
@@ -188,6 +193,7 @@ function diasPlano(pagamento) {
 
 function enriquecerPagamento(pagamento) {
   const dataBase = pagamento.confirmado_em || pagamento.criado_em;
+  const pixExpiraEm = adicionarTempo(pagamento.criado_em, PIX_EXPIRACAO_MINUTOS, "minutos");
   const dataExpiracao =
     pagamento.expira_em ||
     (pagamento.status === "confirmado"
@@ -198,6 +204,7 @@ function enriquecerPagamento(pagamento) {
     ...pagamento,
     dias_plano: diasPlano(pagamento),
     data_expiracao: dataExpiracao,
+    pix_expira_em: pixExpiraEm,
     expirado: dataExpiracao ? new Date(dataExpiracao) < new Date() : false
   };
 }
@@ -419,7 +426,7 @@ Painel Admin: ${ADMIN_PANEL_URL}
 }
 
 async function sincronizarPagamentoMercadoPago(pagamento) {
-  if (!pagamento || pagamento.status === "confirmado") {
+  if (!pagamento || pagamento.status === "confirmado" || pagamento.status === "cancelado") {
     return pagamento;
   }
 
@@ -431,6 +438,18 @@ async function sincronizarPagamentoMercadoPago(pagamento) {
   }
 
   return pagamento;
+}
+
+async function cancelarPagamentosPixExpirados() {
+  await db.query(
+    `
+    UPDATE pagamentos
+    SET status = $1
+    WHERE status = $2
+    AND criado_em <= NOW() - ($3 || ' minutes')::interval
+    `,
+    ["cancelado", "pendente", PIX_EXPIRACAO_MINUTOS]
+  );
 }
 
 app.post("/login", limiteLogin, (req, res) => {
@@ -474,6 +493,7 @@ app.post("/pix", limitePublico, async (req, res) => {
         description: plano,
         payment_method_id: "pix",
         payer: { email },
+        date_of_expiration: adicionarTempo(new Date(), PIX_EXPIRACAO_MINUTOS, "minutos"),
         notification_url: "https://sgiptv-backend.onrender.com/webhook"
       }
     });
@@ -546,6 +566,8 @@ app.post("/pix/status", limiteStatusPix, async (req, res) => {
   paymentId = String(paymentId).trim();
 
   try {
+    await cancelarPagamentosPixExpirados();
+
     let pagamento = await buscarPagamentoPorIdentificacao({ paymentId, email, telefone });
 
     if (!pagamento) {
@@ -567,6 +589,8 @@ app.post("/pix/status", limiteStatusPix, async (req, res) => {
 
 app.get("/pagamentos", verificarToken, async (req, res) => {
   try {
+    await cancelarPagamentosPixExpirados();
+
     const result = await db.query("SELECT * FROM pagamentos ORDER BY id DESC");
     res.json(result.rows.map(enriquecerPagamento));
   } catch (error) {
@@ -872,5 +896,37 @@ app.get("/testes-iptv", verificarToken, async (req, res) => {
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: "Erro ao buscar testes" });
+  }
+});
+
+app.put("/pagamentos/:id/cancelar", verificarToken, async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    const result = await db.query(
+      `
+      UPDATE pagamentos
+      SET status = $1
+      WHERE id = $2
+      AND status = $3
+      RETURNING *
+      `,
+      ["cancelado", id, "pendente"]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(409).json({
+        error: "Pagamento nao encontrado ou ja confirmado/cancelado."
+      });
+    }
+
+    res.json({
+      ok: true,
+      message: "Pagamento cancelado",
+      pagamento: enriquecerPagamento(result.rows[0])
+    });
+  } catch (error) {
+    console.error("Erro ao cancelar pagamento:", error);
+    res.status(500).json({ error: "Erro ao cancelar pagamento" });
   }
 });
