@@ -94,6 +94,9 @@ const DIAS_PLANO_POR_VALOR = {
 const TESTE_DURACAO_HORAS = Number(process.env.TESTE_DURACAO_HORAS || 3);
 const PIX_EXPIRACAO_MINUTOS = Number(process.env.PIX_EXPIRACAO_MINUTOS || 15);
 const INTERVALO_TESTE_DIAS = Number(process.env.INTERVALO_TESTE_DIAS || 15);
+const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN?.trim();
+const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID?.trim();
+const TELEGRAM_MAX_UPDATES = Number(process.env.TELEGRAM_MAX_UPDATES || 30);
 
 const TESTADORES_LIBERADOS = [
   {
@@ -157,6 +160,12 @@ const limiteStatusPix = criarRateLimit({
   janelaMs: 10 * 60 * 1000,
   limite: 120,
   mensagem: "Muitas consultas de status. Aguarde alguns minutos e tente novamente."
+});
+
+const limiteConteudo = criarRateLimit({
+  janelaMs: 10 * 60 * 1000,
+  limite: 60,
+  mensagem: "Muitas consultas de conteudo. Aguarde alguns minutos e tente novamente."
 });
 
 function escaparHtml(valor) {
@@ -256,6 +265,83 @@ function formatarDataPtBr(data) {
   return new Date(data).toLocaleString("pt-BR", {
     timeZone: "America/Sao_Paulo"
   });
+}
+
+function classificarAtualizacaoConteudo(texto) {
+  const conteudo = String(texto || "").toLowerCase();
+
+  if (conteudo.includes("jogo") || conteudo.includes("futebol") || conteudo.includes("rodada")) {
+    return "Jogos do dia";
+  }
+
+  if (conteudo.includes("canal") || conteudo.includes("canais")) {
+    return "Canais";
+  }
+
+  if (conteudo.includes("serie") || conteudo.includes("série") || conteudo.includes("temporada")) {
+    return "Series";
+  }
+
+  if (conteudo.includes("filme") || conteudo.includes("cinema")) {
+    return "Filmes";
+  }
+
+  return "Atualizacao";
+}
+
+function extrairTextoTelegram(update) {
+  const mensagem = update.channel_post || update.message || update.edited_channel_post || update.edited_message;
+
+  if (!mensagem) return null;
+
+  const texto = mensagem.text || mensagem.caption;
+
+  if (!texto) return null;
+
+  return {
+    id: update.update_id,
+    chatId: String(mensagem.chat?.id || ""),
+    texto: String(texto).trim(),
+    data: mensagem.date ? new Date(mensagem.date * 1000).toISOString() : null
+  };
+}
+
+async function buscarAtualizacoesTelegram() {
+  if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) {
+    return {
+      configurado: false,
+      atualizacoes: []
+    };
+  }
+
+  const url = new URL(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getUpdates`);
+  url.searchParams.set("limit", String(TELEGRAM_MAX_UPDATES));
+  url.searchParams.set("allowed_updates", JSON.stringify(["message", "channel_post", "edited_message", "edited_channel_post"]));
+
+  const resposta = await fetch(url);
+  const dados = await resposta.json();
+
+  if (!resposta.ok || !dados.ok) {
+    throw new Error(dados.description || "Erro ao consultar Telegram.");
+  }
+
+  const atualizacoes = dados.result
+    .map(extrairTextoTelegram)
+    .filter(Boolean)
+    .filter(item => item.chatId === TELEGRAM_CHAT_ID)
+    .slice(-12)
+    .reverse()
+    .map(item => ({
+      id: item.id,
+      categoria: classificarAtualizacaoConteudo(item.texto),
+      texto: item.texto,
+      data: item.data
+    }));
+
+  return {
+    configurado: true,
+    atualizacoes
+  };
 }
 
 function verificarToken(req, res, next) {
@@ -505,6 +591,20 @@ db.query("SELECT NOW()")
 
 app.get("/", (req, res) => {
   res.send("Backend funcionando 🚀");
+});
+
+app.get("/conteudo/atualizacoes", limiteConteudo, async (req, res) => {
+  try {
+    const resultado = await buscarAtualizacoesTelegram();
+
+    res.json({
+      ok: true,
+      ...resultado
+    });
+  } catch (error) {
+    console.error("Erro ao buscar atualizacoes do Telegram:", error);
+    res.status(500).json({ error: "Erro ao buscar atualizacoes de conteudo." });
+  }
 });
 
 app.post("/pix", limitePublico, async (req, res) => {
