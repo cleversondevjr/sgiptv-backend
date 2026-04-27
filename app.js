@@ -168,6 +168,34 @@ function escaparHtml(valor) {
     .replace(/'/g, "&#39;");
 }
 
+function emailValido(email) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(String(email || ""));
+}
+
+function telefoneValido(telefone) {
+  const numero = String(telefone || "").replace(/\D/g, "");
+  return numero.length >= 10 && numero.length <= 13;
+}
+
+function normalizarContato({ email, telefone }) {
+  return {
+    email: String(email || "").trim().toLowerCase(),
+    telefone: String(telefone || "").replace(/\D/g, "")
+  };
+}
+
+function validarContato({ email, telefone }) {
+  if (!emailValido(email)) {
+    return "Informe um email valido.";
+  }
+
+  if (!telefoneValido(telefone)) {
+    return "Informe um WhatsApp valido com DDD.";
+  }
+
+  return null;
+}
+
 function obterPlano(planoId, valorLegado) {
   const id = String(planoId || PLANO_LEGADO_POR_VALOR[String(valorLegado)] || "").trim();
   return PLANOS[id] || null;
@@ -511,17 +539,23 @@ app.post("/pix", limitePublico, async (req, res) => {
   let { planoId, valor, email, telefone } = req.body;
   const planoSelecionado = obterPlano(planoId, valor);
 
-  if (!planoSelecionado || !email || !telefone) {
-    return res.status(400).json({ error: "Informe plano, valor, email e WhatsApp." });
+  if (!planoSelecionado) {
+    return res.status(400).json({ error: "Escolha um plano valido." });
   }
 
-  email = String(email).trim().toLowerCase();
-  telefone = String(telefone).replace(/\D/g, "");
+  ({ email, telefone } = normalizarContato({ email, telefone }));
+
+  const erroContato = validarContato({ email, telefone });
+  if (erroContato) {
+    return res.status(400).json({ error: erroContato });
+  }
+
   const plano = planoSelecionado.nome;
   valor = planoSelecionado.valor;
 
   try {
     const payment = new Payment(client);
+    const pixExpiraEm = adicionarTempo(new Date(), PIX_EXPIRACAO_MINUTOS, "minutos");
 
     const result = await payment.create({
       body: {
@@ -529,7 +563,7 @@ app.post("/pix", limitePublico, async (req, res) => {
         description: plano,
         payment_method_id: "pix",
         payer: { email },
-        date_of_expiration: adicionarTempo(new Date(), PIX_EXPIRACAO_MINUTOS, "minutos"),
+        date_of_expiration: pixExpiraEm,
         notification_url: "https://sgiptv-backend.onrender.com/webhook"
       }
     });
@@ -581,7 +615,9 @@ Painel Admin: ${ADMIN_PANEL_URL}
     res.json({
       qr_code: data.qr_code,
       qr_base64: data.qr_code_base64,
-      payment_id: paymentId
+      payment_id: paymentId,
+      pix_expira_em: pixExpiraEm,
+      pix_expiracao_minutos: PIX_EXPIRACAO_MINUTOS
     });
 
   } catch (error) {
@@ -597,9 +633,13 @@ app.post("/pix/status", limiteStatusPix, async (req, res) => {
     return res.status(400).json({ error: "Informe payment_id, email e WhatsApp." });
   }
 
-  email = String(email).trim().toLowerCase();
-  telefone = String(telefone).replace(/\D/g, "");
+  ({ email, telefone } = normalizarContato({ email, telefone }));
   paymentId = String(paymentId).trim();
+
+  const erroContato = validarContato({ email, telefone });
+  if (erroContato) {
+    return res.status(400).json({ error: erroContato });
+  }
 
   try {
     await cancelarPagamentosPixExpirados();
@@ -684,8 +724,12 @@ app.post("/cliente/consulta", limitePublico, async (req, res) => {
     return res.status(400).json({ error: "Informe email e WhatsApp." });
   }
 
-  email = String(email).trim().toLowerCase();
-  telefone = String(telefone).replace(/\D/g, "");
+  ({ email, telefone } = normalizarContato({ email, telefone }));
+
+  const erroContato = validarContato({ email, telefone });
+  if (erroContato) {
+    return res.status(400).json({ error: erroContato });
+  }
 
   try {
     const pagamentoResult = await db.query(
@@ -766,9 +810,18 @@ app.post("/teste-iptv", limitePublico, async (req, res) => {
     return res.status(400).json({ error: "Informe email e WhatsApp para gerar o teste." });
   }
 
-  email = String(email).trim().toLowerCase();
-  telefone = String(telefone).replace(/\D/g, "");
+  ({ email, telefone } = normalizarContato({ email, telefone }));
+
+  const erroContato = validarContato({ email, telefone });
+  if (erroContato) {
+    return res.status(400).json({ error: erroContato });
+  }
+
   tipoTeste = tipoTeste || "iptv_com_adulto";
+
+  if (!TESTE_URLS[tipoTeste]) {
+    return res.status(400).json({ error: "Escolha um tipo de teste valido." });
+  }
 
   const liberadoParaTeste = podeGerarTesteSemLimite(email, telefone);
 
