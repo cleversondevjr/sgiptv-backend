@@ -193,6 +193,17 @@ function adicionarTempo(data, quantidade, unidade) {
   return resultado.toISOString();
 }
 
+function adicionarDiasFimDoDia(data, dias) {
+  const resultado = new Date(data);
+
+  if (Number.isNaN(resultado.getTime())) return null;
+
+  resultado.setDate(resultado.getDate() + dias);
+  resultado.setHours(23, 59, 59, 999);
+
+  return resultado.toISOString();
+}
+
 function diasPlano(pagamento) {
   const valor = String(Number(pagamento?.valor || 0));
   const plano = String(pagamento?.plano || "").toLowerCase();
@@ -209,7 +220,7 @@ function enriquecerPagamento(pagamento) {
   const dataExpiracao =
     pagamento.expira_em ||
     (pagamento.status === "confirmado"
-      ? adicionarTempo(dataBase, diasPlano(pagamento), "dias")
+      ? adicionarDiasFimDoDia(dataBase, diasPlano(pagamento))
       : null);
 
   return {
