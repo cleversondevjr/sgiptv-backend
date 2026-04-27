@@ -1,3 +1,4 @@
+import "dotenv/config";
 import express from "express";
 import cors from "cors";
 import jwt from "jsonwebtoken";
@@ -7,23 +8,212 @@ import { db } from "./db.js";
 
 const app = express();
 
-app.use(cors());
+app.set("trust proxy", 1);
+const allowedOrigins = new Set([
+  "https://sgiptv.com.br",
+  "https://www.sgiptv.com.br",
+  "http://localhost:3000",
+  "http://localhost:4000",
+  "http://127.0.0.1:5500"
+]);
+
+if (process.env.FRONTEND_ORIGIN) {
+  for (const origin of process.env.FRONTEND_ORIGIN.split(",")) {
+    allowedOrigins.add(origin.trim());
+  }
+}
+
+app.use(cors({
+  origin(origin, callback) {
+    if (!origin || allowedOrigins.has(origin)) {
+      return callback(null, true);
+    }
+
+    return callback(new Error("Origem nao permitida pelo CORS."));
+  }
+}));
 app.use(express.json());
+
+const requiredEnv = [
+  "ACCESS_TOKEN",
+  "ADMIN_USER",
+  "ADMIN_PASS",
+  "DATABASE_URL",
+  "JWT_SECRET"
+];
+
+const missingEnv = requiredEnv.filter(name => !process.env[name]?.trim());
+
+if (missingEnv.length > 0) {
+  throw new Error(`Variaveis de ambiente obrigatorias ausentes: ${missingEnv.join(", ")}`);
+}
 
 const client = new MercadoPagoConfig({
   accessToken: process.env.ACCESS_TOKEN?.trim()
 });
 
-const JWT_SECRET = process.env.JWT_SECRET || "sgiptv_admin_secret";
+const JWT_SECRET = process.env.JWT_SECRET.trim();
 
 const ADMIN_EMAIL_AVISOS = "suportesgiptv01@gmail.com";
 const ADMIN_PANEL_URL = "https://sgiptv.com.br/admin.html";
+
+const PLANOS = {
+  mensal_1_tela: {
+    id: "mensal_1_tela",
+    nome: "Mensal - 1 Tela",
+    valor: 30,
+    dias: 30
+  },
+  mensal_2_telas: {
+    id: "mensal_2_telas",
+    nome: "Mensal - 2 Telas",
+    valor: 50,
+    dias: 30
+  },
+  trimestral_1_tela: {
+    id: "trimestral_1_tela",
+    nome: "Trimestral - 1 Tela",
+    valor: 80,
+    dias: 90
+  },
+  trimestral_2_telas: {
+    id: "trimestral_2_telas",
+    nome: "Trimestral - 2 Telas",
+    valor: 140,
+    dias: 90
+  }
+};
+
+const DIAS_PLANO_POR_VALOR = {
+  "30": 30,
+  "50": 30,
+  "80": 90,
+  "140": 90
+};
+
+const TESTE_DURACAO_HORAS = Number(process.env.TESTE_DURACAO_HORAS || 3);
+
+const PLANO_LEGADO_POR_VALOR = {
+  "30": "mensal_1_tela",
+  "50": "mensal_2_telas",
+  "80": "trimestral_1_tela",
+  "140": "trimestral_2_telas"
+};
 
 const TESTE_URLS = {
   iptv_com_adulto: "https://prpainel.online/api/chatbot/ywDm7Eb1pR/BV4D3rLaqZ",
   iptv_sem_adulto: "https://prpainel.online/api/chatbot/ywDm7Eb1pR/8241Kg1mxd",
   p2p: "https://prpainel.online/api/chatbot/ywDm7Eb1pR/B0VDVALK3q"
 };
+
+function criarRateLimit({ janelaMs, limite, mensagem }) {
+  const tentativas = new Map();
+
+  return (req, res, next) => {
+    const chave = `${req.ip}:${req.path}`;
+    const agora = Date.now();
+    const registro = tentativas.get(chave);
+
+    if (!registro || registro.expiraEm <= agora) {
+      tentativas.set(chave, { total: 1, expiraEm: agora + janelaMs });
+      return next();
+    }
+
+    if (registro.total >= limite) {
+      return res.status(429).json({ error: mensagem });
+    }
+
+    registro.total += 1;
+    return next();
+  };
+}
+
+const limiteLogin = criarRateLimit({
+  janelaMs: 15 * 60 * 1000,
+  limite: 10,
+  mensagem: "Muitas tentativas. Aguarde alguns minutos e tente novamente."
+});
+
+const limitePublico = criarRateLimit({
+  janelaMs: 10 * 60 * 1000,
+  limite: 30,
+  mensagem: "Muitas solicitacoes. Aguarde alguns minutos e tente novamente."
+});
+
+const limiteStatusPix = criarRateLimit({
+  janelaMs: 10 * 60 * 1000,
+  limite: 120,
+  mensagem: "Muitas consultas de status. Aguarde alguns minutos e tente novamente."
+});
+
+function escaparHtml(valor) {
+  return String(valor || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function obterPlano(planoId, valorLegado) {
+  const id = String(planoId || PLANO_LEGADO_POR_VALOR[String(valorLegado)] || "").trim();
+  return PLANOS[id] || null;
+}
+
+function adicionarTempo(data, quantidade, unidade) {
+  const resultado = new Date(data);
+
+  if (Number.isNaN(resultado.getTime())) return null;
+
+  if (unidade === "dias") {
+    resultado.setDate(resultado.getDate() + quantidade);
+  }
+
+  if (unidade === "horas") {
+    resultado.setHours(resultado.getHours() + quantidade);
+  }
+
+  return resultado.toISOString();
+}
+
+function diasPlano(pagamento) {
+  const valor = String(Number(pagamento?.valor || 0));
+  const plano = String(pagamento?.plano || "").toLowerCase();
+
+  if (DIAS_PLANO_POR_VALOR[valor]) return DIAS_PLANO_POR_VALOR[valor];
+  if (plano.includes("trimestral")) return 90;
+
+  return 30;
+}
+
+function enriquecerPagamento(pagamento) {
+  const dataBase = pagamento.confirmado_em || pagamento.criado_em;
+  const dataExpiracao =
+    pagamento.expira_em ||
+    (pagamento.status === "confirmado"
+      ? adicionarTempo(dataBase, diasPlano(pagamento), "dias")
+      : null);
+
+  return {
+    ...pagamento,
+    dias_plano: diasPlano(pagamento),
+    data_expiracao: dataExpiracao,
+    expirado: dataExpiracao ? new Date(dataExpiracao) < new Date() : false
+  };
+}
+
+function enriquecerTeste(teste) {
+  const dataExpiracao =
+    teste.expira_em ||
+    adicionarTempo(teste.criado_em, TESTE_DURACAO_HORAS, "horas");
+
+  return {
+    ...teste,
+    duracao_teste_horas: TESTE_DURACAO_HORAS,
+    data_expiracao: dataExpiracao,
+    expirado: dataExpiracao ? new Date(dataExpiracao) < new Date() : false
+  };
+}
 
 function verificarToken(req, res, next) {
   const token = req.headers.authorization;
@@ -162,7 +352,88 @@ async function enviarEmailAvisoAdmin({ assunto, html, text }) {
   }
 }
 
-app.post("/login", (req, res) => {
+async function buscarPagamentoPorIdentificacao({ paymentId, email, telefone }) {
+  const result = await db.query(
+    `
+    SELECT *
+    FROM pagamentos
+    WHERE payment_id = $1
+    AND email = $2
+    AND telefone = $3
+    LIMIT 1
+    `,
+    [String(paymentId), email, telefone]
+  );
+
+  return result.rows[0] || null;
+}
+
+async function confirmarPagamentoRecebido(pagamento, origem = "webhook") {
+  if (!pagamento || pagamento.status === "confirmado") {
+    return pagamento;
+  }
+
+  const result = await db.query(
+    `
+    UPDATE pagamentos
+    SET status = $1
+    WHERE payment_id = $2
+    RETURNING *
+    `,
+    ["confirmado", String(pagamento.payment_id)]
+  );
+
+  const confirmado = result.rows[0] || pagamento;
+
+  await enviarEmailAvisoAdmin({
+    assunto: "Pix recebido - SG IPTV",
+    text: `
+Pix recebido
+
+Plano: ${confirmado.plano}
+Valor: R$ ${confirmado.valor}
+Email: ${confirmado.email}
+WhatsApp: ${confirmado.telefone}
+Payment ID: ${confirmado.payment_id}
+Origem: ${origem}
+
+Painel Admin: ${ADMIN_PANEL_URL}
+    `,
+    html: `
+      <div style="font-family: Arial, sans-serif; background:#05000f; color:#ffffff; padding:25px;">
+        <div style="max-width:720px; margin:auto; background:#0b0018; border:1px solid #22c55e; border-radius:14px; padding:25px;">
+          <h2 style="color:#22c55e;">Pix recebido</h2>
+          <p><strong>Plano:</strong> ${escaparHtml(confirmado.plano)}</p>
+          <p><strong>Valor:</strong> R$ ${escaparHtml(confirmado.valor)}</p>
+          <p><strong>Email:</strong> ${escaparHtml(confirmado.email)}</p>
+          <p><strong>WhatsApp:</strong> ${escaparHtml(confirmado.telefone)}</p>
+          <p><strong>Payment ID:</strong> ${escaparHtml(confirmado.payment_id)}</p>
+          <p><strong>Origem:</strong> ${escaparHtml(origem)}</p>
+          ${criarBotaoPainelAdmin()}
+        </div>
+      </div>
+    `
+  });
+
+  return confirmado;
+}
+
+async function sincronizarPagamentoMercadoPago(pagamento) {
+  if (!pagamento || pagamento.status === "confirmado") {
+    return pagamento;
+  }
+
+  const payment = new Payment(client);
+  const result = await payment.get({ id: pagamento.payment_id });
+
+  if (result.status === "approved") {
+    return confirmarPagamentoRecebido(pagamento, "mercado_pago");
+  }
+
+  return pagamento;
+}
+
+app.post("/login", limiteLogin, (req, res) => {
   const { usuario, senha } = req.body;
 
   if (usuario === process.env.ADMIN_USER && senha === process.env.ADMIN_PASS) {
@@ -181,16 +452,18 @@ app.get("/", (req, res) => {
   res.send("Backend funcionando 🚀");
 });
 
-app.post("/pix", async (req, res) => {
-  let { plano, valor, email, telefone } = req.body;
+app.post("/pix", limitePublico, async (req, res) => {
+  let { planoId, valor, email, telefone } = req.body;
+  const planoSelecionado = obterPlano(planoId, valor);
 
-  if (!valor || !email || !telefone) {
+  if (!planoSelecionado || !email || !telefone) {
     return res.status(400).json({ error: "Informe plano, valor, email e WhatsApp." });
   }
 
   email = String(email).trim().toLowerCase();
   telefone = String(telefone).replace(/\D/g, "");
-  plano = plano || "Plano SG IPTV";
+  const plano = planoSelecionado.nome;
+  valor = planoSelecionado.valor;
 
   try {
     const payment = new Payment(client);
@@ -235,10 +508,10 @@ Painel Admin: ${ADMIN_PANEL_URL}
         <div style="font-family: Arial, sans-serif; background:#05000f; color:#ffffff; padding:25px;">
           <div style="max-width:720px; margin:auto; background:#0b0018; border:1px solid #7e22ce; border-radius:14px; padding:25px;">
             <h2 style="color:#facc15;">Novo Pix gerado</h2>
-            <p><strong>Plano:</strong> ${plano}</p>
-            <p><strong>Valor:</strong> R$ ${valor}</p>
-            <p><strong>Email:</strong> ${email}</p>
-            <p><strong>WhatsApp:</strong> ${telefone}</p>
+            <p><strong>Plano:</strong> ${escaparHtml(plano)}</p>
+            <p><strong>Valor:</strong> R$ ${escaparHtml(valor)}</p>
+            <p><strong>Email:</strong> ${escaparHtml(email)}</p>
+            <p><strong>WhatsApp:</strong> ${escaparHtml(telefone)}</p>
             <p><strong>Status:</strong> pendente</p>
             <p><strong>Payment ID:</strong> ${paymentId}</p>
             <hr style="border-color:#7e22ce;">
@@ -261,10 +534,41 @@ Painel Admin: ${ADMIN_PANEL_URL}
   }
 });
 
+app.post("/pix/status", limiteStatusPix, async (req, res) => {
+  let { payment_id: paymentId, email, telefone } = req.body;
+
+  if (!paymentId || !email || !telefone) {
+    return res.status(400).json({ error: "Informe payment_id, email e WhatsApp." });
+  }
+
+  email = String(email).trim().toLowerCase();
+  telefone = String(telefone).replace(/\D/g, "");
+  paymentId = String(paymentId).trim();
+
+  try {
+    let pagamento = await buscarPagamentoPorIdentificacao({ paymentId, email, telefone });
+
+    if (!pagamento) {
+      return res.status(404).json({ error: "Pagamento nao encontrado." });
+    }
+
+    pagamento = await sincronizarPagamentoMercadoPago(pagamento);
+
+    return res.json({
+      ok: true,
+      pagamento: enriquecerPagamento(pagamento)
+    });
+
+  } catch (error) {
+    console.error("Erro ao consultar status Pix:", error);
+    return res.status(500).json({ error: "Erro ao consultar status do Pix." });
+  }
+});
+
 app.get("/pagamentos", verificarToken, async (req, res) => {
   try {
     const result = await db.query("SELECT * FROM pagamentos ORDER BY id DESC");
-    res.json(result.rows);
+    res.json(result.rows.map(enriquecerPagamento));
   } catch (error) {
     console.error("Erro ao buscar pagamentos:", error);
     res.status(500).json({ error: "Erro ao buscar pagamentos" });
@@ -313,7 +617,7 @@ app.post("/webhook", async (req, res) => {
   }
 });
 
-app.post("/cliente/consulta", async (req, res) => {
+app.post("/cliente/consulta", limitePublico, async (req, res) => {
   let { email, telefone } = req.body;
 
   if (!email || !telefone) {
@@ -329,7 +633,7 @@ app.post("/cliente/consulta", async (req, res) => {
       SELECT *
       FROM pagamentos
       WHERE email = $1
-      AND (telefone = $2 OR telefone IS NULL)
+      AND telefone = $2
       ORDER BY criado_em DESC, id DESC
       LIMIT 1
       `,
@@ -345,7 +649,7 @@ app.post("/cliente/consulta", async (req, res) => {
           telefone,
           loginAreaCliente: email,
           senhaAreaCliente: telefone,
-          ultimoPagamento: pagamentoResult.rows[0],
+          ultimoPagamento: enriquecerPagamento(pagamentoResult.rows[0]),
           ultimoTeste: null
         }
       });
@@ -369,7 +673,7 @@ app.post("/cliente/consulta", async (req, res) => {
       });
     }
 
-    const teste = testeResult.rows[0];
+    const teste = enriquecerTeste(testeResult.rows[0]);
     const dadosTeste = extrairLoginSenha(teste.resposta);
 
     return res.json({
@@ -395,7 +699,7 @@ app.post("/cliente/consulta", async (req, res) => {
   }
 });
 
-app.post("/teste-iptv", async (req, res) => {
+app.post("/teste-iptv", limitePublico, async (req, res) => {
   let { email, telefone, tipoTeste } = req.body;
 
   if (!email || !telefone) {
@@ -478,7 +782,7 @@ app.post("/teste-iptv", async (req, res) => {
             <div style="font-family: Arial, sans-serif; background:#05000f; color:#ffffff; padding:25px;">
               <div style="max-width:760px; margin:auto; background:#0b0018; border:1px solid #7e22ce; border-radius:14px; padding:25px;">
                 <h2 style="color:#facc15; margin-top:0;">Seu teste grátis SG IPTV foi gerado!</h2>
-                <pre style="white-space:pre-wrap;word-wrap:break-word;background:#020617;color:#ffffff;border:1px solid #7e22ce;border-radius:12px;padding:18px;font-size:14px;line-height:1.6;">${textoFormatado}</pre>
+                <pre style="white-space:pre-wrap;word-wrap:break-word;background:#020617;color:#ffffff;border:1px solid #7e22ce;border-radius:12px;padding:18px;font-size:14px;line-height:1.6;">${escaparHtml(textoFormatado)}</pre>
                 <p style="color:#facc15; font-weight:bold;">Equipe SG IPTV</p>
               </div>
             </div>
@@ -510,12 +814,12 @@ Painel Admin: ${ADMIN_PANEL_URL}
         <div style="font-family: Arial, sans-serif; background:#05000f; color:#ffffff; padding:25px;">
           <div style="max-width:720px; margin:auto; background:#0b0018; border:1px solid #7e22ce; border-radius:14px; padding:25px;">
             <h2 style="color:#facc15;">Novo teste IPTV gerado</h2>
-            <p><strong>Tipo de teste:</strong> ${tipoTeste}</p>
-            <p><strong>Email do cliente:</strong> ${email}</p>
-            <p><strong>WhatsApp do cliente:</strong> ${telefone}</p>
+            <p><strong>Tipo de teste:</strong> ${escaparHtml(tipoTeste)}</p>
+            <p><strong>Email do cliente:</strong> ${escaparHtml(email)}</p>
+            <p><strong>WhatsApp do cliente:</strong> ${escaparHtml(telefone)}</p>
             <div style="background:#020617; border:1px solid #7e22ce; border-radius:12px; padding:15px; margin-top:15px;">
-              <p><strong style="color:#facc15;">Login:</strong> ${dadosTeste.login}</p>
-              <p><strong style="color:#facc15;">Senha:</strong> ${dadosTeste.senha}</p>
+              <p><strong style="color:#facc15;">Login:</strong> ${escaparHtml(dadosTeste.login)}</p>
+              <p><strong style="color:#facc15;">Senha:</strong> ${escaparHtml(dadosTeste.senha)}</p>
             </div>
             <p style="margin-top:18px; color:#facc15;">Resumo completo salvo no banco.</p>
             ${criarBotaoPainelAdmin()}
@@ -553,10 +857,11 @@ app.get("/testes-iptv", verificarToken, async (req, res) => {
     `);
 
     const lista = result.rows.map(t => {
-      const dados = extrairLoginSenha(t.resposta);
+      const teste = enriquecerTeste(t);
+      const dados = extrairLoginSenha(teste.resposta);
 
       return {
-        ...t,
+        ...teste,
         login: dados.login,
         senha: dados.senha
       };
