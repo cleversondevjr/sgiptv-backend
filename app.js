@@ -93,6 +93,18 @@ const DIAS_PLANO_POR_VALOR = {
 
 const TESTE_DURACAO_HORAS = Number(process.env.TESTE_DURACAO_HORAS || 3);
 const PIX_EXPIRACAO_MINUTOS = Number(process.env.PIX_EXPIRACAO_MINUTOS || 15);
+const INTERVALO_TESTE_DIAS = Number(process.env.INTERVALO_TESTE_DIAS || 15);
+
+const TESTADORES_LIBERADOS = [
+  {
+    email: "suportesgiptv01@gmail.com",
+    telefone: "11919628194"
+  },
+  {
+    email: "cleversonleite2014@gmail.com",
+    telefone: "11951623333"
+  }
+];
 
 const PLANO_LEGADO_POR_VALOR = {
   "30": "mensal_1_tela",
@@ -220,6 +232,19 @@ function enriquecerTeste(teste) {
     data_expiracao: dataExpiracao,
     expirado: dataExpiracao ? new Date(dataExpiracao) < new Date() : false
   };
+}
+
+function podeGerarTesteSemLimite(email, telefone) {
+  return TESTADORES_LIBERADOS.some(tester => (
+    tester.email === email &&
+    tester.telefone === telefone
+  ));
+}
+
+function formatarDataPtBr(data) {
+  return new Date(data).toLocaleString("pt-BR", {
+    timeZone: "America/Sao_Paulo"
+  });
 }
 
 function verificarToken(req, res, next) {
@@ -734,22 +759,35 @@ app.post("/teste-iptv", limitePublico, async (req, res) => {
   telefone = String(telefone).replace(/\D/g, "");
   tipoTeste = tipoTeste || "iptv_com_adulto";
 
-  const EMAILS_LIBERADOS = [
-    "suportesgiptv01@gmail.com",
-    "cleversonleite2014@gmail.com"
-  ];
-
-  const TELEFONES_LIBERADOS = [
-    "11919628194",
-    "11951623333"
-  ];
-
-  const liberadoParaTeste =
-    EMAILS_LIBERADOS.includes(email) ||
-    TELEFONES_LIBERADOS.includes(telefone);
+  const liberadoParaTeste = podeGerarTesteSemLimite(email, telefone);
 
   try {
     if (!liberadoParaTeste) {
+      const ultimoTesteResult = await db.query(
+        `
+        SELECT criado_em
+        FROM testes_iptv
+        WHERE email = $1 OR telefone = $2
+        ORDER BY criado_em DESC, id DESC
+        LIMIT 1
+        `,
+        [email, telefone]
+      );
+
+      if (ultimoTesteResult.rows.length > 0) {
+        const ultimoTeste = new Date(ultimoTesteResult.rows[0].criado_em);
+        const proximoTeste = new Date(ultimoTeste);
+        proximoTeste.setDate(proximoTeste.getDate() + INTERVALO_TESTE_DIAS);
+
+        if (proximoTeste > new Date()) {
+          return res.status(409).json({
+            error: `Este email ou WhatsApp ja solicitou um teste gratis. Tente novamente em ${formatarDataPtBr(proximoTeste)}.`
+          });
+        }
+      }
+    }
+
+    if (false && !liberadoParaTeste) {
       const jaExiste = await db.query(
         "SELECT * FROM testes_iptv WHERE email = $1 OR telefone = $2",
         [email, telefone]
@@ -786,7 +824,6 @@ app.post("/teste-iptv", limitePublico, async (req, res) => {
       `
       INSERT INTO testes_iptv (email, telefone, resposta)
       VALUES ($1, $2, $3)
-      ON CONFLICT DO NOTHING
       `,
       [email, telefone, textoFormatado]
     );
