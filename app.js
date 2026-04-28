@@ -817,21 +817,6 @@ app.post("/cliente/consulta", limitePublico, async (req, res) => {
       [email, telefone]
     );
 
-    if (pagamentoResult.rows.length > 0) {
-      return res.json({
-        ok: true,
-        cliente: {
-          tipoCliente: "pagamento",
-          email,
-          telefone,
-          loginAreaCliente: email,
-          senhaAreaCliente: telefone,
-          ultimoPagamento: enriquecerPagamento(pagamentoResult.rows[0]),
-          ultimoTeste: null
-        }
-      });
-    }
-
     const testeResult = await db.query(
       `
       SELECT *
@@ -844,29 +829,41 @@ app.post("/cliente/consulta", limitePublico, async (req, res) => {
       [email, telefone]
     );
 
-    if (testeResult.rows.length === 0) {
+    const ultimoPagamento = pagamentoResult.rows[0]
+      ? enriquecerPagamento(pagamentoResult.rows[0])
+      : null;
+    const ultimoTeste = testeResult.rows[0]
+      ? (() => {
+        const teste = enriquecerTeste(testeResult.rows[0]);
+        const dadosTeste = extrairLoginSenha(teste.resposta);
+
+        return {
+          ...teste,
+          login: dadosTeste.login,
+          senha: dadosTeste.senha
+        };
+      })()
+      : null;
+
+    if (!ultimoPagamento && !ultimoTeste) {
       return res.status(404).json({
         error: "Nenhum plano ou teste encontrado para este email e WhatsApp."
       });
     }
 
-    const teste = enriquecerTeste(testeResult.rows[0]);
-    const dadosTeste = extrairLoginSenha(teste.resposta);
+    // Se houver teste recente e o pagamento nao estiver confirmado, priorizamos o painel de teste.
+    const usarPainelTeste = !!ultimoTeste && (!ultimoPagamento || ultimoPagamento.status !== "confirmado");
 
     return res.json({
       ok: true,
       cliente: {
-        tipoCliente: "teste",
+        tipoCliente: usarPainelTeste ? "teste" : "pagamento",
         email,
         telefone,
         loginAreaCliente: email,
         senhaAreaCliente: telefone,
-        ultimoPagamento: null,
-        ultimoTeste: {
-          ...teste,
-          login: dadosTeste.login,
-          senha: dadosTeste.senha
-        }
+        ultimoPagamento,
+        ultimoTeste
       }
     });
 
