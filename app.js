@@ -1254,6 +1254,8 @@ app.post("/teste-iptv", limitePublico, async (req, res) => {
 
     const textoFormatado = extrairMensagemPainel(textoBruto);
     const dadosTeste = extrairLoginSenha(textoFormatado);
+    const agoraIso = new Date().toISOString();
+    const vencimentoTeste = adicionarTempo(agoraIso, TESTE_DURACAO_HORAS, "horas");
 
     try {
       await db.query(
@@ -1415,6 +1417,37 @@ app.get("/testes-iptv", verificarToken, async (req, res) => {
         login: dados.login,
         senha: dados.senha
       });
+    }
+
+    // Garante que todo teste novo apareca tambem na lista de clientes (login/senha).
+    try {
+      await db.query(
+        `
+        INSERT INTO clientes (usuario, senha, plano, conexoes, criado_em, vencimento, email, telefone)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        ON CONFLICT (usuario) DO UPDATE SET
+          senha = EXCLUDED.senha,
+          plano = EXCLUDED.plano,
+          conexoes = EXCLUDED.conexoes,
+          criado_em = EXCLUDED.criado_em,
+          vencimento = EXCLUDED.vencimento,
+          email = EXCLUDED.email,
+          telefone = EXCLUDED.telefone,
+          atualizado_em = NOW()
+        `,
+        [
+          dadosTeste.login,
+          dadosTeste.senha,
+          "TESTE GRATUITO",
+          1,
+          agoraIso,
+          vencimentoTeste,
+          email,
+          telefone
+        ]
+      );
+    } catch (clienteError) {
+      console.error("Erro ao salvar teste em clientes:", clienteError);
     }
 
     res.json(lista);
