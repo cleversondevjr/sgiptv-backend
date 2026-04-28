@@ -285,9 +285,11 @@ function enriquecerTeste(teste) {
 }
 
 function podeGerarTesteSemLimite(email, telefone) {
+  const emailNormalizado = String(email || "").trim().toLowerCase();
+  const telefoneNormalizado = String(telefone || "").replace(/\D/g, "");
+
   return TESTADORES_LIBERADOS.some(tester => (
-    tester.email === email &&
-    tester.telefone === telefone
+    tester.email === emailNormalizado || tester.telefone === telefoneNormalizado
   ));
 }
 
@@ -334,15 +336,29 @@ function webhookSecretValido(req) {
 }
 
 async function adminCredenciaisValidas(usuario, senha) {
-  if (usuario !== process.env.ADMIN_USER) return false;
+  const usuarioEsperado = String(process.env.ADMIN_USER || "").trim();
+  const usuarioInformado = String(usuario || "").trim();
+  const senhaInformada = String(senha || "").trim();
+
+  if (!usuarioEsperado || usuarioInformado !== usuarioEsperado) return false;
 
   const senhaHash = process.env.ADMIN_PASS_HASH?.trim();
+  const senhaTexto = String(process.env.ADMIN_PASS || "").trim();
 
   if (senhaHash) {
-    return bcrypt.compare(String(senha || ""), senhaHash);
+    try {
+      const hashValido = await bcrypt.compare(senhaInformada, senhaHash);
+      if (hashValido) return true;
+    } catch (error) {
+      console.error("ADMIN_PASS_HASH invalido:", error);
+    }
   }
 
-  return String(senha || "") === process.env.ADMIN_PASS;
+  if (senhaTexto) {
+    return senhaInformada === senhaTexto;
+  }
+
+  return false;
 }
 
 function limparTextoPainel(texto) {
@@ -941,13 +957,37 @@ app.post("/teste-iptv", limitePublico, async (req, res) => {
     const textoFormatado = extrairMensagemPainel(textoBruto);
     const dadosTeste = extrairLoginSenha(textoFormatado);
 
-    await db.query(
-      `
-      INSERT INTO testes_iptv (email, telefone, resposta)
-      VALUES ($1, $2, $3)
-      `,
-      [email, telefone, textoFormatado]
-    );
+    try {
+      await db.query(
+        `
+        INSERT INTO testes_iptv (email, telefone, resposta)
+        VALUES ($1, $2, $3)
+        `,
+        [email, telefone, textoFormatado]
+      );
+    } catch (dbError) {
+      // Em bases legadas pode existir UNIQUE em email/telefone.
+      // Nesses casos, atualizamos o registro existente para evitar erro 500.
+      if (dbError?.code === "23505") {
+        const atualizacao = await db.query(
+          `
+          UPDATE testes_iptv
+          SET telefone = $2,
+              resposta = $3,
+              criado_em = NOW()
+          WHERE email = $1 OR telefone = $2
+          RETURNING id
+          `,
+          [email, telefone, textoFormatado]
+        );
+
+        if (atualizacao.rows.length === 0) {
+          throw dbError;
+        }
+      } else {
+        throw dbError;
+      }
+    }
 
     let emailEnviado = false;
 
