@@ -576,6 +576,17 @@ async function cancelarPagamentosPixExpirados() {
   );
 }
 
+async function limparPagamentosCanceladosAntigos() {
+  await db.query(
+    `
+    DELETE FROM pagamentos
+    WHERE status = $1
+    AND criado_em <= NOW() - '24 hours'::interval
+    `,
+    ["cancelado"]
+  );
+}
+
 app.post("/login", limiteLogin, (req, res) => {
   const { usuario, senha } = req.body;
 
@@ -597,6 +608,36 @@ app.post("/login", limiteLogin, (req, res) => {
 db.query("SELECT NOW()")
   .then(res => console.log("Banco conectado:", res.rows))
   .catch(err => console.error("Erro no banco:", err));
+
+db.query(`ALTER TABLE pagamentos ADD COLUMN IF NOT EXISTS aviso_24h_enviado_em TIMESTAMPTZ`)
+  .then(() => console.log("Coluna aviso_24h_enviado_em OK"))
+  .catch(err => console.error("Erro ao garantir coluna aviso_24h_enviado_em:", err));
+
+db.query(`
+  CREATE TABLE IF NOT EXISTS clientes (
+    id BIGSERIAL PRIMARY KEY,
+    usuario TEXT NOT NULL UNIQUE,
+    senha TEXT NOT NULL,
+    plano TEXT NOT NULL,
+    conexoes INTEGER NOT NULL DEFAULT 1,
+    criado_em TIMESTAMPTZ NOT NULL,
+    vencimento TIMESTAMPTZ NOT NULL,
+    email TEXT,
+    telefone TEXT,
+    nome TEXT,
+    atualizado_em TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  )
+`)
+  .then(() => console.log("Tabela clientes OK"))
+  .catch(err => console.error("Erro ao garantir tabela clientes:", err));
+
+db.query(`ALTER TABLE testes_iptv ADD COLUMN IF NOT EXISTS login TEXT`)
+  .then(() => console.log("Coluna testes_iptv.login OK"))
+  .catch(err => console.error("Erro ao garantir coluna testes_iptv.login:", err));
+
+db.query(`ALTER TABLE testes_iptv ADD COLUMN IF NOT EXISTS senha TEXT`)
+  .then(() => console.log("Coluna testes_iptv.senha OK"))
+  .catch(err => console.error("Erro ao garantir coluna testes_iptv.senha:", err));
 
 app.get("/", (req, res) => {
   res.send("Backend funcionando 🚀");
@@ -712,6 +753,7 @@ app.post("/pix/status", limiteStatusPix, async (req, res) => {
 
   try {
     await cancelarPagamentosPixExpirados();
+    await limparPagamentosCanceladosAntigos();
 
     let pagamento = await buscarPagamentoPorIdentificacao({ paymentId, email, telefone });
 
@@ -735,12 +777,184 @@ app.post("/pix/status", limiteStatusPix, async (req, res) => {
 app.get("/pagamentos", verificarToken, async (req, res) => {
   try {
     await cancelarPagamentosPixExpirados();
+    await limparPagamentosCanceladosAntigos();
 
     const result = await db.query("SELECT * FROM pagamentos ORDER BY id DESC");
-    res.json(result.rows.map(enriquecerPagamento));
+    const lista = result.rows.map(enriquecerPagamento);
+
+    for (const pagamento of lista) {
+      if (pagamento.status !== "confirmado") continue;
+      if (!pagamento.data_expiracao) continue;
+      if (pagamento.aviso_24h_enviado_em) continue;
+
+      const expiraEm = new Date(pagamento.data_expiracao).getTime();
+      if (Number.isNaN(expiraEm)) continue;
+
+      const restanteMs = expiraEm - Date.now();
+      if (restanteMs <= 0) continue;
+
+      if (restanteMs <= 24 * 60 * 60 * 1000) {
+        await enviarEmailAvisoAdmin({
+          assunto: "Plano com menos de 24h - SG IPTV",
+          text: `
+Plano com menos de 24h
+
+Email: ${pagamento.email}
+WhatsApp: ${pagamento.telefone}
+Plano: ${pagamento.plano}
+Valor: R$ ${pagamento.valor}
+Expira em: ${formatarDataPtBr(pagamento.data_expiracao)}
+Payment ID: ${pagamento.payment_id}
+
+Painel Admin: ${ADMIN_PANEL_URL}
+          `,
+          html: `
+            <div style="font-family: Arial, sans-serif; background:#05000f; color:#ffffff; padding:25px;">
+              <div style="max-width:720px; margin:auto; background:#0b0018; border:1px solid #facc15; border-radius:14px; padding:25px;">
+                <h2 style="color:#facc15;">Plano com menos de 24h</h2>
+                <p><strong>Email:</strong> ${escaparHtml(pagamento.email)}</p>
+                <p><strong>WhatsApp:</strong> ${escaparHtml(pagamento.telefone)}</p>
+                <p><strong>Plano:</strong> ${escaparHtml(pagamento.plano)}</p>
+                <p><strong>Valor:</strong> R$ ${escaparHtml(pagamento.valor)}</p>
+                <p><strong>Expira em:</strong> ${escaparHtml(formatarDataPtBr(pagamento.data_expiracao))}</p>
+                <p><strong>Payment ID:</strong> ${escaparHtml(pagamento.payment_id)}</p>
+                ${criarBotaoPainelAdmin()}
+              </div>
+            </div>
+          `
+        });
+
+        await db.query(
+          `
+          UPDATE pagamentos
+          SET aviso_24h_enviado_em = NOW()
+          WHERE id = $1
+          AND aviso_24h_enviado_em IS NULL
+          `,
+          [pagamento.id]
+        );
+      }
+    }
+
+    res.json(lista);
   } catch (error) {
     console.error("Erro ao buscar pagamentos:", error);
     res.status(500).json({ error: "Erro ao buscar pagamentos" });
+  }
+});
+
+app.post("/pagamentos/:id/avisar", verificarToken, async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    const result = await db.query(
+      `
+      SELECT *
+      FROM pagamentos
+      WHERE id = $1
+      LIMIT 1
+      `,
+      [id]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: "Pagamento nao encontrado." });
+    }
+
+    const pagamento = enriquecerPagamento(result.rows[0]);
+
+    await enviarEmailAvisoAdmin({
+      assunto: "Aviso manual - SG IPTV",
+      text: `
+Aviso manual enviado pelo admin
+
+Email: ${pagamento.email}
+WhatsApp: ${pagamento.telefone}
+Plano: ${pagamento.plano}
+Valor: R$ ${pagamento.valor}
+Expira em: ${pagamento.data_expiracao ? formatarDataPtBr(pagamento.data_expiracao) : "Nao informado"}
+Payment ID: ${pagamento.payment_id}
+
+Painel Admin: ${ADMIN_PANEL_URL}
+      `,
+      html: `
+        <div style="font-family: Arial, sans-serif; background:#05000f; color:#ffffff; padding:25px;">
+          <div style="max-width:720px; margin:auto; background:#0b0018; border:1px solid #7e22ce; border-radius:14px; padding:25px;">
+            <h2 style="color:#facc15;">Aviso manual enviado</h2>
+            <p><strong>Email:</strong> ${escaparHtml(pagamento.email)}</p>
+            <p><strong>WhatsApp:</strong> ${escaparHtml(pagamento.telefone)}</p>
+            <p><strong>Plano:</strong> ${escaparHtml(pagamento.plano)}</p>
+            <p><strong>Valor:</strong> R$ ${escaparHtml(pagamento.valor)}</p>
+            <p><strong>Expira em:</strong> ${escaparHtml(pagamento.data_expiracao ? formatarDataPtBr(pagamento.data_expiracao) : "Nao informado")}</p>
+            <p><strong>Payment ID:</strong> ${escaparHtml(pagamento.payment_id)}</p>
+            ${criarBotaoPainelAdmin()}
+          </div>
+        </div>
+      `
+    });
+
+    await db.query(
+      `
+      UPDATE pagamentos
+      SET aviso_24h_enviado_em = NOW()
+      WHERE id = $1
+      `,
+      [id]
+    );
+
+    return res.json({ ok: true });
+  } catch (error) {
+    console.error("Erro ao avisar cliente:", error);
+    return res.status(500).json({ error: "Erro ao enviar aviso." });
+  }
+});
+
+app.get("/clientes", verificarToken, async (req, res) => {
+  try {
+    const result = await db.query(`
+      SELECT *
+      FROM clientes
+      ORDER BY vencimento DESC, id DESC
+    `);
+
+    res.json(result.rows);
+  } catch (error) {
+    console.error("Erro ao buscar clientes:", error);
+    res.status(500).json({ error: "Erro ao buscar clientes" });
+  }
+});
+
+app.put("/clientes/:id", verificarToken, async (req, res) => {
+  const { id } = req.params;
+  const { nome, email, telefone } = req.body || {};
+
+  try {
+    const result = await db.query(
+      `
+      UPDATE clientes
+      SET nome = $1,
+          email = $2,
+          telefone = $3,
+          atualizado_em = NOW()
+      WHERE id = $4
+      RETURNING *
+      `,
+      [
+        nome ? String(nome).trim() : null,
+        email ? String(email).trim().toLowerCase() : null,
+        telefone ? String(telefone).replace(/\\D/g, "") : null,
+        id
+      ]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: "Cliente nao encontrado." });
+    }
+
+    res.json({ ok: true, cliente: result.rows[0] });
+  } catch (error) {
+    console.error("Erro ao atualizar cliente:", error);
+    res.status(500).json({ error: "Erro ao atualizar cliente" });
   }
 });
 
@@ -791,7 +1005,94 @@ app.post("/webhook", async (req, res) => {
 });
 
 app.post("/cliente/consulta", limitePublico, async (req, res) => {
-  let { email, telefone } = req.body;
+  let { email, telefone, usuario, senha } = req.body;
+
+  const modoContato = Boolean(email || telefone);
+  const modoCliente = Boolean(usuario || senha);
+
+  if (!modoContato && !modoCliente) {
+    return res.status(400).json({ error: "Informe email/WhatsApp ou usuario/senha." });
+  }
+
+  if (modoCliente) {
+    usuario = String(usuario || "").trim();
+    senha = String(senha || "").trim();
+
+    if (!usuario || !senha) {
+      return res.status(400).json({ error: "Informe usuario e senha." });
+    }
+
+    try {
+      const result = await db.query(
+        `
+        SELECT *
+        FROM clientes
+        WHERE usuario = $1
+        AND senha = $2
+        LIMIT 1
+        `,
+        [usuario, senha]
+      );
+
+      if (result.rows.length === 0) {
+        const testeResult = await db.query(
+          `
+          SELECT *
+          FROM testes_iptv
+          WHERE login = $1
+          AND senha = $2
+          ORDER BY criado_em DESC, id DESC
+          LIMIT 1
+          `,
+          [usuario, senha]
+        );
+
+        if (testeResult.rows.length === 0) {
+          return res.status(404).json({ error: "Cliente nao encontrado." });
+        }
+
+        const teste = enriquecerTeste(testeResult.rows[0]);
+
+        return res.json({
+          ok: true,
+          cliente: {
+            tipoCliente: "teste",
+            email: teste.email,
+            telefone: teste.telefone,
+            loginAreaCliente: teste.login || usuario,
+            senhaAreaCliente: teste.senha || senha,
+            ultimoPagamento: null,
+            ultimoTeste: {
+              ...teste,
+              login: teste.login || usuario,
+              senha: teste.senha || senha
+            }
+          }
+        });
+      }
+
+      const cliente = result.rows[0];
+
+      return res.json({
+        ok: true,
+        cliente: {
+          tipoCliente: "cliente",
+          usuario: cliente.usuario,
+          senha: cliente.senha,
+          plano: cliente.plano,
+          conexoes: cliente.conexoes,
+          criado_em: cliente.criado_em,
+          vencimento: cliente.vencimento,
+          nome: cliente.nome,
+          email: cliente.email,
+          telefone: cliente.telefone
+        }
+      });
+    } catch (error) {
+      console.error("Erro ao consultar cliente por usuario:", error);
+      return res.status(500).json({ error: "Erro ao consultar cliente." });
+    }
+  }
 
   if (!email || !telefone) {
     return res.status(400).json({ error: "Informe email e WhatsApp." });
@@ -957,10 +1258,10 @@ app.post("/teste-iptv", limitePublico, async (req, res) => {
     try {
       await db.query(
         `
-        INSERT INTO testes_iptv (email, telefone, resposta)
-        VALUES ($1, $2, $3)
+        INSERT INTO testes_iptv (email, telefone, resposta, login, senha)
+        VALUES ($1, $2, $3, $4, $5)
         `,
-        [email, telefone, textoFormatado]
+        [email, telefone, textoFormatado, dadosTeste.login, dadosTeste.senha]
       );
     } catch (dbError) {
       // Em bases legadas pode existir UNIQUE em email/telefone.
@@ -971,11 +1272,13 @@ app.post("/teste-iptv", limitePublico, async (req, res) => {
           UPDATE testes_iptv
           SET telefone = $2,
               resposta = $3,
+              login = $4,
+              senha = $5,
               criado_em = NOW()
           WHERE email = $1 OR telefone = $2
           RETURNING id
           `,
-          [email, telefone, textoFormatado]
+          [email, telefone, textoFormatado, dadosTeste.login, dadosTeste.senha]
         );
 
         if (atualizacao.rows.length === 0) {
@@ -1075,16 +1378,44 @@ app.get("/testes-iptv", verificarToken, async (req, res) => {
       ORDER BY id DESC
     `);
 
-    const lista = result.rows.map(t => {
-      const teste = enriquecerTeste(t);
-      const dados = extrairLoginSenha(teste.resposta);
+    const lista = [];
 
-      return {
+    for (const item of result.rows) {
+      const teste = enriquecerTeste(item);
+      const criadoEm = new Date(teste.criado_em);
+      const diasDesdeCriacao = Number.isNaN(criadoEm.getTime())
+        ? 0
+        : Math.floor((Date.now() - criadoEm.getTime()) / (24 * 60 * 60 * 1000));
+
+      let liberarCredenciais = true;
+
+      if (diasDesdeCriacao >= 10) {
+        const renovacao = await db.query(
+          `
+          SELECT 1
+          FROM pagamentos
+          WHERE email = $1
+          AND telefone = $2
+          AND status = $3
+          AND criado_em >= $4
+          LIMIT 1
+          `,
+          [teste.email, teste.telefone, "confirmado", teste.criado_em]
+        );
+
+        liberarCredenciais = renovacao.rows.length > 0;
+      }
+
+      const dados = liberarCredenciais
+        ? extrairLoginSenha(teste.resposta)
+        : { login: "-", senha: "-" };
+
+      lista.push({
         ...teste,
         login: dados.login,
         senha: dados.senha
-      };
-    });
+      });
+    }
 
     res.json(lista);
 
