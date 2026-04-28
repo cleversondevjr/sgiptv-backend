@@ -66,6 +66,7 @@ const NOTIFICATION_URL =
   "https://sgiptv-backend.onrender.com/webhook";
 
 const ADMIN_EMAIL_AVISOS = "suportesgiptv01@gmail.com";
+const ADMIN_WHATSAPP_AVISOS = "5511919628194";
 const ADMIN_PANEL_URL = "https://sgiptv.com.br/admin.html";
 
 const PLANOS = {
@@ -483,6 +484,81 @@ async function enviarEmailAvisoAdmin({ assunto, html, text }) {
   }
 }
 
+async function enviarWhatsappAvisoAdmin(texto) {
+  const phone = String(process.env.ADMIN_WHATSAPP_NUMBER || ADMIN_WHATSAPP_AVISOS).replace(/\D/g, "");
+  const apikey = String(process.env.ADMIN_WHATSAPP_APIKEY || "").trim();
+
+  if (!apikey) {
+    console.log("WhatsApp admin nao enviado: ADMIN_WHATSAPP_APIKEY ausente.");
+    return false;
+  }
+
+  try {
+    const url =
+      `https://api.callmebot.com/whatsapp.php?phone=${encodeURIComponent(phone)}` +
+      `&text=${encodeURIComponent(texto)}` +
+      `&apikey=${encodeURIComponent(apikey)}`;
+
+    const res = await fetch(url);
+    if (!res.ok) {
+      console.error("Erro ao enviar WhatsApp admin:", await res.text());
+      return false;
+    }
+
+    return true;
+  } catch (error) {
+    console.error("Erro ao enviar WhatsApp admin:", error);
+    return false;
+  }
+}
+
+async function notificarVendaAdmin({ tipo, pagamento, origem }) {
+  const p = enriquecerPagamento(pagamento);
+  const linhas = [
+    `SG IPTV - ${tipo}`,
+    "",
+    `Plano: ${p.plano}`,
+    `Valor: R$ ${p.valor}`,
+    `Email: ${p.email}`,
+    `WhatsApp cliente: ${p.telefone}`,
+    `Payment ID: ${p.payment_id}`,
+    origem ? `Origem: ${origem}` : null,
+    "",
+    `Painel Admin: ${ADMIN_PANEL_URL}`
+  ].filter(Boolean);
+
+  const texto = linhas.join("\n");
+
+  await enviarEmailAvisoAdmin({
+    assunto: `${tipo} - SG IPTV`,
+    text: texto,
+    html: `
+      <div style="font-family: Arial, sans-serif; background:#05000f; color:#ffffff; padding:25px;">
+        <div style="max-width:720px; margin:auto; background:#0b0018; border:1px solid #7e22ce; border-radius:14px; padding:25px;">
+          <h2 style="color:#facc15;">${escaparHtml(tipo)}</h2>
+          <p><strong>Plano:</strong> ${escaparHtml(p.plano)}</p>
+          <p><strong>Valor:</strong> R$ ${escaparHtml(p.valor)}</p>
+          <p><strong>Email:</strong> ${escaparHtml(p.email)}</p>
+          <p><strong>WhatsApp cliente:</strong> ${escaparHtml(p.telefone)}</p>
+          <p><strong>Payment ID:</strong> ${escaparHtml(p.payment_id)}</p>
+          ${origem ? `<p><strong>Origem:</strong> ${escaparHtml(origem)}</p>` : ""}
+          <hr style="border-color:#7e22ce;">
+          ${criarBotaoPainelAdmin()}
+        </div>
+      </div>
+    `
+  });
+
+  await enviarWhatsappAvisoAdmin(texto);
+}
+
+function phoneToBr(phoneDigits) {
+  const digits = String(phoneDigits || "").replace(/\D/g, "");
+  if (!digits) return "";
+  if (digits.startsWith("55")) return `+${digits}`;
+  return `+55${digits}`;
+}
+
 async function buscarPagamentoPorIdentificacao({ paymentId, email, telefone }) {
   const result = await db.query(
     `
@@ -507,7 +583,8 @@ async function confirmarPagamentoRecebido(pagamento, origem = "webhook") {
   const result = await db.query(
     `
     UPDATE pagamentos
-    SET status = $1
+    SET status = $1,
+        confirmado_em = NOW()
     WHERE payment_id = $2
     RETURNING *
     `,
@@ -516,35 +593,14 @@ async function confirmarPagamentoRecebido(pagamento, origem = "webhook") {
 
   const confirmado = result.rows[0] || pagamento;
 
-  await enviarEmailAvisoAdmin({
-    assunto: "Pix recebido - SG IPTV",
-    text: `
-Pix recebido
-
-Plano: ${confirmado.plano}
-Valor: R$ ${confirmado.valor}
-Email: ${confirmado.email}
-WhatsApp: ${confirmado.telefone}
-Payment ID: ${confirmado.payment_id}
-Origem: ${origem}
-
-Painel Admin: ${ADMIN_PANEL_URL}
-    `,
-    html: `
-      <div style="font-family: Arial, sans-serif; background:#05000f; color:#ffffff; padding:25px;">
-        <div style="max-width:720px; margin:auto; background:#0b0018; border:1px solid #22c55e; border-radius:14px; padding:25px;">
-          <h2 style="color:#22c55e;">Pix recebido</h2>
-          <p><strong>Plano:</strong> ${escaparHtml(confirmado.plano)}</p>
-          <p><strong>Valor:</strong> R$ ${escaparHtml(confirmado.valor)}</p>
-          <p><strong>Email:</strong> ${escaparHtml(confirmado.email)}</p>
-          <p><strong>WhatsApp:</strong> ${escaparHtml(confirmado.telefone)}</p>
-          <p><strong>Payment ID:</strong> ${escaparHtml(confirmado.payment_id)}</p>
-          <p><strong>Origem:</strong> ${escaparHtml(origem)}</p>
-          ${criarBotaoPainelAdmin()}
-        </div>
-      </div>
-    `
-  });
+  if (!confirmado.notificado_em) {
+    await notificarVendaAdmin({ tipo: "Pix recebido", pagamento: confirmado, origem });
+    try {
+      await db.query("UPDATE pagamentos SET notificado_em = NOW() WHERE payment_id = $1", [String(confirmado.payment_id)]);
+    } catch (error) {
+      console.error("Erro ao salvar notificado_em:", error);
+    }
+  }
 
   return confirmado;
 }
@@ -690,36 +746,10 @@ app.post("/pix", limitePublico, async (req, res) => {
 
     const data = result.point_of_interaction.transaction_data;
 
-    await enviarEmailAvisoAdmin({
-      assunto: "Novo Pix gerado - SG IPTV",
-      text: `
-Novo Pix gerado
-
-Plano: ${plano}
-Valor: R$ ${valor}
-Email: ${email}
-WhatsApp: ${telefone}
-Status: pendente
-Payment ID: ${paymentId}
-
-Painel Admin: ${ADMIN_PANEL_URL}
-      `,
-      html: `
-        <div style="font-family: Arial, sans-serif; background:#05000f; color:#ffffff; padding:25px;">
-          <div style="max-width:720px; margin:auto; background:#0b0018; border:1px solid #7e22ce; border-radius:14px; padding:25px;">
-            <h2 style="color:#facc15;">Novo Pix gerado</h2>
-            <p><strong>Plano:</strong> ${escaparHtml(plano)}</p>
-            <p><strong>Valor:</strong> R$ ${escaparHtml(valor)}</p>
-            <p><strong>Email:</strong> ${escaparHtml(email)}</p>
-            <p><strong>WhatsApp:</strong> ${escaparHtml(telefone)}</p>
-            <p><strong>Status:</strong> pendente</p>
-            <p><strong>Payment ID:</strong> ${paymentId}</p>
-            <hr style="border-color:#7e22ce;">
-            <p style="color:#facc15;">O cliente gerou um QR Code Pix. Aguarde o pagamento ou acompanhe pelo painel admin.</p>
-            ${criarBotaoPainelAdmin()}
-          </div>
-        </div>
-      `
+    await notificarVendaAdmin({
+      tipo: "Novo Pix gerado",
+      pagamento: { email, telefone, plano, valor, payment_id: paymentId },
+      origem: "pix"
     });
 
     res.json({

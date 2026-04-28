@@ -6,6 +6,8 @@ CREATE TABLE IF NOT EXISTS pagamentos (
   valor NUMERIC(10, 2) NOT NULL,
   status TEXT NOT NULL DEFAULT 'pendente',
   payment_id TEXT UNIQUE NOT NULL,
+  confirmado_em TIMESTAMPTZ,
+  notificado_em TIMESTAMPTZ,
   criado_em TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   atualizado_em TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   CONSTRAINT pagamentos_status_check CHECK (status IN ('pendente', 'confirmado', 'cancelado'))
