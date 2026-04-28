@@ -2,13 +2,17 @@ import "dotenv/config";
 import express from "express";
 import cors from "cors";
 import jwt from "jsonwebtoken";
+import bcrypt from "bcrypt";
+import crypto from "node:crypto";
 import nodemailer from "nodemailer";
+import helmet from "helmet";
 import { MercadoPagoConfig, Payment } from "mercadopago";
 import { db } from "./db.js";
 
 const app = express();
 
 app.set("trust proxy", 1);
+app.use(helmet());
 const allowedOrigins = new Set([
   "https://sgiptv.com.br",
   "https://www.sgiptv.com.br",
@@ -37,7 +41,6 @@ app.use(express.json());
 const requiredEnv = [
   "ACCESS_TOKEN",
   "ADMIN_USER",
-  "ADMIN_PASS",
   "DATABASE_URL",
   "JWT_SECRET"
 ];
@@ -48,11 +51,19 @@ if (missingEnv.length > 0) {
   throw new Error(`Variaveis de ambiente obrigatorias ausentes: ${missingEnv.join(", ")}`);
 }
 
+if (!process.env.ADMIN_PASS?.trim() && !process.env.ADMIN_PASS_HASH?.trim()) {
+  throw new Error("Defina ADMIN_PASS ou ADMIN_PASS_HASH.");
+}
+
 const client = new MercadoPagoConfig({
   accessToken: process.env.ACCESS_TOKEN?.trim()
 });
 
 const JWT_SECRET = process.env.JWT_SECRET.trim();
+const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET?.trim() || "";
+const NOTIFICATION_URL =
+  process.env.WEBHOOK_NOTIFICATION_URL?.trim() ||
+  "https://sgiptv-backend.onrender.com/webhook";
 
 const ADMIN_EMAIL_AVISOS = "suportesgiptv01@gmail.com";
 const ADMIN_PANEL_URL = "https://sgiptv.com.br/admin.html";
@@ -287,7 +298,10 @@ function formatarDataPtBr(data) {
 }
 
 function verificarToken(req, res, next) {
-  const token = req.headers.authorization;
+  const authorization = String(req.headers.authorization || "").trim();
+  const token = authorization.toLowerCase().startsWith("bearer ")
+    ? authorization.slice(7).trim()
+    : authorization;
 
   if (!token) {
     return res.status(401).json({ error: "Token não enviado" });
@@ -299,6 +313,36 @@ function verificarToken(req, res, next) {
   } catch (error) {
     return res.status(401).json({ error: "Token inválido" });
   }
+}
+
+function webhookSecretValido(req) {
+  if (!WEBHOOK_SECRET) return true;
+
+  const recebido =
+    String(req.query.secret || req.headers["x-webhook-secret"] || "").trim();
+
+  if (!recebido) return false;
+
+  const segredoEsperado = Buffer.from(WEBHOOK_SECRET, "utf8");
+  const segredoRecebido = Buffer.from(recebido, "utf8");
+
+  if (segredoEsperado.length !== segredoRecebido.length) {
+    return false;
+  }
+
+  return crypto.timingSafeEqual(segredoEsperado, segredoRecebido);
+}
+
+async function adminCredenciaisValidas(usuario, senha) {
+  if (usuario !== process.env.ADMIN_USER) return false;
+
+  const senhaHash = process.env.ADMIN_PASS_HASH?.trim();
+
+  if (senhaHash) {
+    return bcrypt.compare(String(senha || ""), senhaHash);
+  }
+
+  return String(senha || "") === process.env.ADMIN_PASS;
 }
 
 function limparTextoPainel(texto) {
@@ -519,12 +563,19 @@ async function cancelarPagamentosPixExpirados() {
 app.post("/login", limiteLogin, (req, res) => {
   const { usuario, senha } = req.body;
 
-  if (usuario === process.env.ADMIN_USER && senha === process.env.ADMIN_PASS) {
-    const token = jwt.sign({ usuario }, JWT_SECRET, { expiresIn: "1d" });
-    return res.json({ token });
-  }
+  adminCredenciaisValidas(usuario, senha)
+    .then(valido => {
+      if (!valido) {
+        return res.status(401).json({ error: "Usuário ou senha inválidos" });
+      }
 
-  res.status(401).json({ error: "Usuário ou senha inválidos" });
+      const token = jwt.sign({ usuario }, JWT_SECRET, { expiresIn: "1d" });
+      return res.json({ token });
+    })
+    .catch(error => {
+      console.error("Erro ao validar login admin:", error);
+      return res.status(500).json({ error: "Erro ao processar login." });
+    });
 });
 
 db.query("SELECT NOW()")
@@ -564,7 +615,9 @@ app.post("/pix", limitePublico, async (req, res) => {
         payment_method_id: "pix",
         payer: { email },
         date_of_expiration: pixExpiraEm,
-        notification_url: "https://sgiptv-backend.onrender.com/webhook"
+        notification_url: WEBHOOK_SECRET
+          ? `${NOTIFICATION_URL}?secret=${encodeURIComponent(WEBHOOK_SECRET)}`
+          : NOTIFICATION_URL
       }
     });
 
@@ -693,6 +746,10 @@ app.put("/pagamentos/:id/confirmar", verificarToken, async (req, res) => {
 
 app.post("/webhook", async (req, res) => {
   try {
+    if (!webhookSecretValido(req)) {
+      return res.status(401).json({ error: "Webhook sem autorizacao." });
+    }
+
     const paymentId = req.body?.data?.id;
 
     if (!paymentId) return res.sendStatus(200);
