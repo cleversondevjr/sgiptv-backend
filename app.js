@@ -450,6 +450,49 @@ function criarBotaoPainelAdmin() {
 }
 
 function criarTransporterEmail() {
+  const brevoKey = String(process.env.BREVO_API_KEY || "").trim();
+  if (brevoKey) {
+    // Fallback via HTTP (porta 443), evita timeout de SMTP em alguns hosts.
+    return {
+      async sendMail({ from, to, subject, text, html }) {
+        const fromEmail = extrairEmailFrom(from) || String(process.env.EMAIL_FROM || "").trim() || null;
+        const fromName = extrairNomeFrom(from) || String(process.env.EMAIL_FROM_NAME || "SG IPTV").trim();
+
+        if (!fromEmail) {
+          throw new Error("EMAIL_FROM (ou from) nao configurado para envio via Brevo API.");
+        }
+
+        const payload = {
+          sender: { email: fromEmail, name: fromName },
+          to: String(to || "")
+            .split(",")
+            .map(v => v.trim())
+            .filter(Boolean)
+            .map(email => ({ email })),
+          subject,
+          textContent: text || undefined,
+          htmlContent: html || undefined
+        };
+
+        const res = await fetch("https://api.brevo.com/v3/smtp/email", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "api-key": brevoKey
+          },
+          body: JSON.stringify(payload)
+        });
+
+        if (!res.ok) {
+          const body = await res.text();
+          throw new Error(`Brevo API erro (${res.status}): ${body}`);
+        }
+
+        return true;
+      }
+    };
+  }
+
   const smtpHost = String(process.env.SMTP_HOST || "").trim();
   const smtpUser = String(process.env.SMTP_USER || "").trim();
   const smtpPass = String(process.env.SMTP_PASS || "").trim();
@@ -478,6 +521,21 @@ function criarTransporterEmail() {
       pass: process.env.EMAIL_PASS
     }
   });
+}
+
+function extrairEmailFrom(from) {
+  const texto = String(from || "").trim();
+  const match = texto.match(/<([^>]+)>/);
+  if (match) return match[1].trim();
+  if (texto.includes("@")) return texto.replace(/"/g, "").trim();
+  return "";
+}
+
+function extrairNomeFrom(from) {
+  const texto = String(from || "").trim();
+  const match = texto.match(/^\"?([^<\"]+?)\"?\s*<[^>]+>$/);
+  if (match) return match[1].trim();
+  return "";
 }
 
 async function enviarEmailAvisoAdmin({ assunto, html, text }) {
