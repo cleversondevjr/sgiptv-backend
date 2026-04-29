@@ -640,26 +640,10 @@ async function enviarTelegramAvisoAdmin(texto) {
 async function notificarVendaAdmin({ tipo, pagamento, origem }) {
   const p = enriquecerPagamento(pagamento);
 
-  let credenciais = null;
-  try {
-    if (p.email && p.telefone) {
-      const credResult = await db.query(
-        `
-        SELECT usuario, senha
-        FROM clientes
-        WHERE email = $1
-        AND telefone = $2
-        ORDER BY id DESC
-        LIMIT 1
-        `,
-        [String(p.email).trim().toLowerCase(), String(p.telefone).replace(/\D/g, "")]
-      );
-
-      credenciais = credResult.rows[0] || null;
-    }
-  } catch (error) {
-    console.error("Erro ao buscar credenciais do cliente para aviso:", error);
-  }
+  const credenciais = {
+    usuario: p.cliente_usuario || null,
+    senha: p.cliente_senha || null
+  };
 
   const linhas = [
     `SG IPTV - ${tipo}`,
@@ -959,6 +943,14 @@ db.query(`ALTER TABLE pagamentos ADD COLUMN IF NOT EXISTS atualizado_em TIMESTAM
   .then(() => console.log("Coluna pagamentos.atualizado_em OK"))
   .catch(err => console.error("Erro ao garantir coluna pagamentos.atualizado_em:", err));
 
+db.query(`ALTER TABLE pagamentos ADD COLUMN IF NOT EXISTS cliente_usuario TEXT`)
+  .then(() => console.log("Coluna pagamentos.cliente_usuario OK"))
+  .catch(err => console.error("Erro ao garantir coluna pagamentos.cliente_usuario:", err));
+
+db.query(`ALTER TABLE pagamentos ADD COLUMN IF NOT EXISTS cliente_senha TEXT`)
+  .then(() => console.log("Coluna pagamentos.cliente_senha OK"))
+  .catch(err => console.error("Erro ao garantir coluna pagamentos.cliente_senha:", err));
+
 db.query(`
   CREATE TABLE IF NOT EXISTS clientes (
     id BIGSERIAL PRIMARY KEY,
@@ -1000,7 +992,7 @@ app.get("/", (req, res) => {
 });
 
 app.post("/pix", limitePublico, async (req, res) => {
-  let { planoId, valor, email, telefone } = req.body;
+  let { planoId, valor, email, telefone, cliente_usuario, cliente_senha } = req.body;
   const planoSelecionado = obterPlano(planoId, valor);
 
   if (!planoSelecionado) {
@@ -1016,6 +1008,9 @@ app.post("/pix", limitePublico, async (req, res) => {
 
   const plano = planoSelecionado.nome;
   valor = planoSelecionado.valor;
+
+  const clienteUsuario = String(cliente_usuario || "").trim() || null;
+  const clienteSenha = String(cliente_senha || "").trim() || null;
 
   try {
     const payment = new Payment(client);
@@ -1038,10 +1033,10 @@ app.post("/pix", limitePublico, async (req, res) => {
 
     await db.query(
       `
-      INSERT INTO pagamentos (email, telefone, plano, valor, status, payment_id)
-      VALUES ($1, $2, $3, $4, $5, $6)
+      INSERT INTO pagamentos (email, telefone, plano, valor, status, payment_id, cliente_usuario, cliente_senha)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
       `,
-      [email, telefone, plano, valor, "pendente", paymentId]
+      [email, telefone, plano, valor, "pendente", paymentId, clienteUsuario, clienteSenha]
     );
 
     const data = result.point_of_interaction.transaction_data;
@@ -1174,7 +1169,7 @@ Painel Admin: ${ADMIN_PANEL_URL}
 });
 
 app.post("/admin/pix/teste", verificarToken, async (req, res) => {
-  let { planoId, valor, email, telefone } = req.body || {};
+  let { planoId, valor, email, telefone, cliente_usuario, cliente_senha } = req.body || {};
   const planoSelecionado = obterPlano(planoId, valor);
 
   if (!planoSelecionado) {
@@ -1190,6 +1185,9 @@ app.post("/admin/pix/teste", verificarToken, async (req, res) => {
 
   const plano = `TESTE PIX - ${planoSelecionado.nome}`;
   valor = planoSelecionado.valor;
+
+  const clienteUsuario = String(cliente_usuario || "").trim() || null;
+  const clienteSenha = String(cliente_senha || "").trim() || null;
 
   try {
     const payment = new Payment(client);
@@ -1212,10 +1210,10 @@ app.post("/admin/pix/teste", verificarToken, async (req, res) => {
 
     await db.query(
       `
-      INSERT INTO pagamentos (email, telefone, plano, valor, status, payment_id)
-      VALUES ($1, $2, $3, $4, $5, $6)
+      INSERT INTO pagamentos (email, telefone, plano, valor, status, payment_id, cliente_usuario, cliente_senha)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
       `,
-      [email, telefone, plano, valor, "pendente", paymentId]
+      [email, telefone, plano, valor, "pendente", paymentId, clienteUsuario, clienteSenha]
     );
 
     const data = result.point_of_interaction.transaction_data;

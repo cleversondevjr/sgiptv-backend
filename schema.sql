@@ -6,6 +6,8 @@ CREATE TABLE IF NOT EXISTS pagamentos (
   valor NUMERIC(10, 2) NOT NULL,
   status TEXT NOT NULL DEFAULT 'pendente',
   payment_id TEXT UNIQUE NOT NULL,
+  cliente_usuario TEXT,
+  cliente_senha TEXT,
   confirmado_em TIMESTAMPTZ,
   notificado_em TIMESTAMPTZ,
   cancelado_em TIMESTAMPTZ,
