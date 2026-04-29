@@ -68,7 +68,7 @@ const NOTIFICATION_URL =
 const ADMIN_EMAIL_AVISOS = "suportesgiptv01@gmail.com";
 const ADMIN_WHATSAPP_AVISOS = "5511919628194";
 const ADMIN_PANEL_URL = "https://sgiptv.com.br/admin.html";
-const ADMIN_EMAIL_VENCIMENTOS = "suportesgipt01@gmail.com";
+const ADMIN_EMAIL_VENCIMENTOS = "suportesgiptv01@gmail.com";
 
 const PLANOS = {
   mensal_1_tela: {
