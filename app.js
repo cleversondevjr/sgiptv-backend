@@ -598,9 +598,22 @@ async function enviarWhatsappAvisoAdmin(texto) {
   }
 }
 
-async function enviarTelegramAvisoAdmin(texto) {
+function obterChatIdTelegram(tipo) {
+  const base = String(process.env.TELEGRAM_CHAT_ID || "").trim();
+  const especifico = String(
+    (tipo === "pix" && process.env.TELEGRAM_CHAT_ID_PIX) ||
+    (tipo === "cliente" && process.env.TELEGRAM_CHAT_ID_CLIENTE) ||
+    (tipo === "revendedor" && process.env.TELEGRAM_CHAT_ID_REVENDEDOR) ||
+    (tipo === "vencimento_1d" && process.env.TELEGRAM_CHAT_ID_VENCIMENTO_1D) ||
+    ""
+  ).trim();
+
+  return especifico || base;
+}
+
+async function enviarTelegramAvisoAdmin(texto, tipo = "default") {
   const token = String(process.env.TELEGRAM_BOT_TOKEN || "").trim();
-  const chatId = String(process.env.TELEGRAM_CHAT_ID || "").trim();
+  const chatId = obterChatIdTelegram(tipo);
 
   if (!token || !chatId) {
     return false;
@@ -661,6 +674,8 @@ async function notificarVendaAdmin({ tipo, pagamento, origem }) {
   ].filter(Boolean);
 
   const texto = linhas.join("\n");
+
+  await enviarTelegramAvisoAdmin(texto, "pix");
 
   await enviarEmailAvisoAdmin({
     assunto: `${tipo} - SG IPTV`,
@@ -741,6 +756,10 @@ Painel Admin: ${ADMIN_PANEL_URL}
       subject: `${tipo} - ${c.usuario}`,
       text: texto
     });
+
+    if (deveAvisar1d) {
+      await enviarTelegramAvisoAdmin(texto, "vencimento_1d");
+    }
 
     try {
       await db.query(
@@ -981,6 +1000,21 @@ app.post("/revendedor/register", async (req, res) => {
       VALUES ($1, $2, $3, $4, $5, $6, $7)
       `,
       [codigo, email, senhaHash, nomeCompleto, pixCpf, bancoNome, "pendente"]
+    );
+
+    await enviarTelegramAvisoAdmin(
+      [
+        "SG IPTV - Novo revendedor cadastrado",
+        "",
+        `Email: ${email}`,
+        nomeCompleto ? `Nome: ${nomeCompleto}` : null,
+        pixCpf ? `PIX (CPF): ${pixCpf}` : null,
+        `Codigo: ${codigo}`,
+        "Status: pendente",
+        "",
+        `Painel Admin: ${ADMIN_PANEL_URL}`
+      ].filter(Boolean).join("\n"),
+      "revendedor"
     );
 
     return res.json({
@@ -2265,6 +2299,21 @@ Painel Admin: ${ADMIN_PANEL_URL}
         </div>
       `
     });
+
+    await enviarTelegramAvisoAdmin(
+      [
+        "SG IPTV - Novo cliente (teste gerado)",
+        "",
+        `Tipo: ${tipoTeste}`,
+        `Email: ${email}`,
+        `WhatsApp: ${telefone}`,
+        `Login: ${dadosTeste.login}`,
+        `Senha: ${dadosTeste.senha}`,
+        "",
+        `Painel Admin: ${ADMIN_PANEL_URL}`
+      ].join("\n"),
+      "cliente"
+    );
 
     res.json({
       ok: true,
