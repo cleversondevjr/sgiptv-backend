@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS pagamentos (
   payment_id TEXT UNIQUE NOT NULL,
   confirmado_em TIMESTAMPTZ,
   notificado_em TIMESTAMPTZ,
+  cancelado_em TIMESTAMPTZ,
   criado_em TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   atualizado_em TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   CONSTRAINT pagamentos_status_check CHECK (status IN ('pendente', 'confirmado', 'cancelado'))
@@ -43,6 +44,8 @@ CREATE TABLE IF NOT EXISTS clientes (
   email TEXT,
   telefone TEXT,
   nome TEXT,
+  aviso_3d_em TIMESTAMPTZ,
+  aviso_1d_em TIMESTAMPTZ,
   atualizado_em TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 

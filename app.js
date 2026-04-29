@@ -68,6 +68,7 @@ const NOTIFICATION_URL =
 const ADMIN_EMAIL_AVISOS = "suportesgiptv01@gmail.com";
 const ADMIN_WHATSAPP_AVISOS = "5511919628194";
 const ADMIN_PANEL_URL = "https://sgiptv.com.br/admin.html";
+const ADMIN_EMAIL_VENCIMENTOS = "suportesgipt01@gmail.com";
 
 const PLANOS = {
   mensal_1_tela: {
@@ -559,6 +560,64 @@ function phoneToBr(phoneDigits) {
   return `+55${digits}`;
 }
 
+async function avisarVencimentosClientes() {
+  const transporter = criarTransporterEmail();
+  if (!transporter) return;
+
+  // Evita spam: envia no maximo 1x por dia por tipo de aviso.
+  const result = await db.query(`
+    SELECT id, usuario, plano, vencimento, email, telefone, nome, aviso_3d_em, aviso_1d_em
+    FROM clientes
+    WHERE vencimento IS NOT NULL
+  `);
+
+  const agora = Date.now();
+  const umDiaMs = 24 * 60 * 60 * 1000;
+
+  for (const c of result.rows) {
+    const venc = new Date(c.vencimento);
+    if (Number.isNaN(venc.getTime())) continue;
+
+    const diffDias = Math.ceil((venc.getTime() - agora) / umDiaMs);
+
+    const deveAvisar3d = diffDias === 3 && (!c.aviso_3d_em || (agora - new Date(c.aviso_3d_em).getTime()) > umDiaMs);
+    const deveAvisar1d = diffDias === 1 && (!c.aviso_1d_em || (agora - new Date(c.aviso_1d_em).getTime()) > umDiaMs);
+
+    if (!deveAvisar3d && !deveAvisar1d) continue;
+
+    const tipo = deveAvisar1d ? "Vencimento em 1 dia" : "Vencimento em 3 dias";
+    const nome = String(c.nome || "").trim();
+    const texto = `
+${tipo} - SG IPTV
+
+Cliente: ${nome || "-"}
+Usuario: ${c.usuario}
+Plano: ${c.plano}
+Vencimento: ${formatarDataPtBr(c.vencimento)}
+Email: ${c.email || "-"}
+WhatsApp: ${c.telefone || "-"}
+
+Painel Admin: ${ADMIN_PANEL_URL}
+    `.trim();
+
+    await transporter.sendMail({
+      from: `"SG IPTV" <${process.env.EMAIL_USER}>`,
+      to: ADMIN_EMAIL_VENCIMENTOS,
+      subject: `${tipo} - ${c.usuario}`,
+      text: texto
+    });
+
+    try {
+      await db.query(
+        `UPDATE clientes SET ${deveAvisar1d ? "aviso_1d_em" : "aviso_3d_em"} = NOW(), atualizado_em = NOW() WHERE id = $1`,
+        [c.id]
+      );
+    } catch (error) {
+      console.error("Erro ao salvar aviso de vencimento:", error);
+    }
+  }
+}
+
 async function buscarPagamentoPorIdentificacao({ paymentId, email, telefone }) {
   const result = await db.query(
     `
@@ -624,7 +683,8 @@ async function cancelarPagamentosPixExpirados() {
   await db.query(
     `
     UPDATE pagamentos
-    SET status = $1
+    SET status = $1,
+        cancelado_em = NOW()
     WHERE status = $2
     AND criado_em <= NOW() - ($3 || ' minutes')::interval
     `,
@@ -637,9 +697,9 @@ async function limparPagamentosCanceladosAntigos() {
     `
     DELETE FROM pagamentos
     WHERE status = $1
-    AND criado_em <= NOW() - '24 hours'::interval
+    AND COALESCE(cancelado_em, atualizado_em, criado_em) <= NOW() - ($2 || ' minutes')::interval
     `,
-    ["cancelado"]
+    ["cancelado", PIX_EXPIRACAO_MINUTOS]
   );
 }
 
@@ -669,6 +729,18 @@ db.query(`ALTER TABLE pagamentos ADD COLUMN IF NOT EXISTS aviso_24h_enviado_em T
   .then(() => console.log("Coluna aviso_24h_enviado_em OK"))
   .catch(err => console.error("Erro ao garantir coluna aviso_24h_enviado_em:", err));
 
+db.query(`ALTER TABLE pagamentos ADD COLUMN IF NOT EXISTS cancelado_em TIMESTAMPTZ`)
+  .then(() => console.log("Coluna pagamentos.cancelado_em OK"))
+  .catch(err => console.error("Erro ao garantir coluna pagamentos.cancelado_em:", err));
+
+db.query(`ALTER TABLE pagamentos ADD COLUMN IF NOT EXISTS confirmado_em TIMESTAMPTZ`)
+  .then(() => console.log("Coluna pagamentos.confirmado_em OK"))
+  .catch(err => console.error("Erro ao garantir coluna pagamentos.confirmado_em:", err));
+
+db.query(`ALTER TABLE pagamentos ADD COLUMN IF NOT EXISTS notificado_em TIMESTAMPTZ`)
+  .then(() => console.log("Coluna pagamentos.notificado_em OK"))
+  .catch(err => console.error("Erro ao garantir coluna pagamentos.notificado_em:", err));
+
 db.query(`
   CREATE TABLE IF NOT EXISTS clientes (
     id BIGSERIAL PRIMARY KEY,
@@ -681,11 +753,21 @@ db.query(`
     email TEXT,
     telefone TEXT,
     nome TEXT,
+    aviso_3d_em TIMESTAMPTZ,
+    aviso_1d_em TIMESTAMPTZ,
     atualizado_em TIMESTAMPTZ NOT NULL DEFAULT NOW()
   )
 `)
   .then(() => console.log("Tabela clientes OK"))
   .catch(err => console.error("Erro ao garantir tabela clientes:", err));
+
+db.query(`ALTER TABLE clientes ADD COLUMN IF NOT EXISTS aviso_3d_em TIMESTAMPTZ`)
+  .then(() => console.log("Coluna clientes.aviso_3d_em OK"))
+  .catch(err => console.error("Erro ao garantir coluna clientes.aviso_3d_em:", err));
+
+db.query(`ALTER TABLE clientes ADD COLUMN IF NOT EXISTS aviso_1d_em TIMESTAMPTZ`)
+  .then(() => console.log("Coluna clientes.aviso_1d_em OK"))
+  .catch(err => console.error("Erro ao garantir coluna clientes.aviso_1d_em:", err));
 
 db.query(`ALTER TABLE testes_iptv ADD COLUMN IF NOT EXISTS login TEXT`)
   .then(() => console.log("Coluna testes_iptv.login OK"))
@@ -1081,11 +1163,10 @@ app.post("/webhook", async (req, res) => {
 app.post("/cliente/consulta", limitePublico, async (req, res) => {
   let { email, telefone, usuario, senha } = req.body;
 
-  const modoContato = Boolean(email || telefone);
   const modoCliente = Boolean(usuario || senha);
 
-  if (!modoContato && !modoCliente) {
-    return res.status(400).json({ error: "Informe email/WhatsApp ou usuario/senha." });
+  if (!modoCliente) {
+    return res.status(400).json({ error: "Informe usuario e senha." });
   }
 
   if (modoCliente) {
@@ -1147,6 +1228,8 @@ app.post("/cliente/consulta", limitePublico, async (req, res) => {
 
       const cliente = result.rows[0];
 
+      avisarVencimentosClientes().catch(err => console.error("Erro avisos vencimento:", err));
+
       return res.json({
         ok: true,
         cliente: {
@@ -1154,7 +1237,6 @@ app.post("/cliente/consulta", limitePublico, async (req, res) => {
           usuario: cliente.usuario,
           senha: cliente.senha,
           plano: cliente.plano,
-          conexoes: cliente.conexoes,
           criado_em: cliente.criado_em,
           vencimento: cliente.vencimento,
           nome: cliente.nome,
@@ -1168,8 +1250,9 @@ app.post("/cliente/consulta", limitePublico, async (req, res) => {
     }
   }
 
+  // Modo contato (email/WhatsApp) foi desativado.
   if (!email || !telefone) {
-    return res.status(400).json({ error: "Informe email e WhatsApp." });
+    return res.status(400).json({ error: "Acesso por email/WhatsApp desativado. Use usuario e senha." });
   }
 
   ({ email, telefone } = normalizarContato({ email, telefone }));
@@ -1539,7 +1622,9 @@ app.put("/pagamentos/:id/cancelar", verificarToken, async (req, res) => {
     const result = await db.query(
       `
       UPDATE pagamentos
-      SET status = $1
+      SET status = $1,
+          cancelado_em = NOW(),
+          atualizado_em = NOW()
       WHERE id = $2
       AND status = $3
       RETURNING *
