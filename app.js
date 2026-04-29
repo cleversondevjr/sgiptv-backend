@@ -618,6 +618,38 @@ Painel Admin: ${ADMIN_PANEL_URL}
   }
 }
 
+async function enviarEmailVencimentoTeste({ dias, cliente }) {
+  const transporter = criarTransporterEmail();
+  if (!transporter) {
+    throw new Error("EMAIL_USER/EMAIL_PASS nao configurado no backend.");
+  }
+
+  const tipo = `Vencimento em ${dias} dia${dias === 1 ? "" : "s"}`;
+  const nome = String(cliente.nome || "").trim();
+
+  const texto = `
+${tipo} - SG IPTV
+
+Cliente: ${nome || "-"}
+Usuario: ${cliente.usuario}
+Plano: ${cliente.plano}
+Vencimento: ${formatarDataPtBr(cliente.vencimento)}
+Email: ${cliente.email || "-"}
+WhatsApp: ${cliente.telefone || "-"}
+
+Painel Admin: ${ADMIN_PANEL_URL}
+  `.trim();
+
+  await transporter.sendMail({
+    from: `"SG IPTV" <${process.env.EMAIL_USER}>`,
+    to: ADMIN_EMAIL_VENCIMENTOS,
+    subject: `${tipo} (TESTE) - ${cliente.usuario}`,
+    text: texto
+  });
+
+  return { ok: true };
+}
+
 async function buscarPagamentoPorIdentificacao({ paymentId, email, telefone }) {
   const result = await db.query(
     `
@@ -952,6 +984,67 @@ Painel Admin: ${ADMIN_PANEL_URL}
   } catch (error) {
     console.error("Erro ao buscar pagamentos:", error);
     res.status(500).json({ error: "Erro ao buscar pagamentos" });
+  }
+});
+
+app.post("/admin/pix/teste", verificarToken, async (req, res) => {
+  let { planoId, valor, email, telefone } = req.body || {};
+  const planoSelecionado = obterPlano(planoId, valor);
+
+  if (!planoSelecionado) {
+    return res.status(400).json({ error: "Escolha um plano valido." });
+  }
+
+  ({ email, telefone } = normalizarContato({ email, telefone }));
+
+  const erroContato = validarContato({ email, telefone });
+  if (erroContato) {
+    return res.status(400).json({ error: erroContato });
+  }
+
+  const plano = `TESTE PIX - ${planoSelecionado.nome}`;
+  valor = planoSelecionado.valor;
+
+  try {
+    const payment = new Payment(client);
+    const pixExpiraEm = adicionarTempo(new Date(), PIX_EXPIRACAO_MINUTOS, "minutos");
+
+    const result = await payment.create({
+      body: {
+        transaction_amount: Number(valor),
+        description: plano,
+        payment_method_id: "pix",
+        payer: { email },
+        date_of_expiration: pixExpiraEm,
+        notification_url: WEBHOOK_SECRET
+          ? `${NOTIFICATION_URL}?secret=${encodeURIComponent(WEBHOOK_SECRET)}`
+          : NOTIFICATION_URL
+      }
+    });
+
+    const paymentId = String(result.id);
+
+    await db.query(
+      `
+      INSERT INTO pagamentos (email, telefone, plano, valor, status, payment_id)
+      VALUES ($1, $2, $3, $4, $5, $6)
+      `,
+      [email, telefone, plano, valor, "pendente", paymentId]
+    );
+
+    const data = result.point_of_interaction.transaction_data;
+
+    res.json({
+      ok: true,
+      qr_code: data.qr_code,
+      qr_base64: data.qr_code_base64,
+      payment_id: paymentId,
+      pix_expira_em: pixExpiraEm,
+      pix_expiracao_minutos: PIX_EXPIRACAO_MINUTOS
+    });
+  } catch (error) {
+    console.error("Erro PIX teste:", error);
+    res.status(500).json({ error: "Erro ao gerar Pix teste" });
   }
 });
 
@@ -1328,6 +1421,40 @@ app.post("/cliente/consulta", limitePublico, async (req, res) => {
   } catch (error) {
     console.error("Erro ao consultar cliente:", error);
     res.status(500).json({ error: "Erro ao consultar área do cliente." });
+  }
+});
+
+app.post("/admin/teste-emails-vencimento", verificarToken, async (req, res) => {
+  try {
+    const { usuario } = req.body || {};
+
+    if (!usuario) {
+      return res.status(400).json({ error: "Informe o usuario do cliente." });
+    }
+
+    const result = await db.query(
+      `
+      SELECT usuario, plano, vencimento, email, telefone, nome
+      FROM clientes
+      WHERE usuario = $1
+      LIMIT 1
+      `,
+      [String(usuario).trim()]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: "Cliente nao encontrado." });
+    }
+
+    const cliente = result.rows[0];
+
+    await enviarEmailVencimentoTeste({ dias: 3, cliente });
+    await enviarEmailVencimentoTeste({ dias: 1, cliente });
+
+    return res.json({ ok: true });
+  } catch (error) {
+    console.error("Erro ao enviar emails teste:", error);
+    return res.status(500).json({ error: "Erro ao enviar emails teste." });
   }
 });
 
