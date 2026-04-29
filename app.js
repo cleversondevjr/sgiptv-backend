@@ -638,7 +638,7 @@ async function enviarTelegramAvisoAdmin(texto, tipo = "default") {
     clearTimeout(timer);
 
     if (!res.ok) {
-      console.error("Erro ao enviar Telegram admin:", await res.text());
+      console.error(`Erro ao enviar Telegram admin (tipo=${tipo}, chatId=${chatId}):`, await res.text());
       return false;
     }
 
@@ -2107,10 +2107,11 @@ app.post("/admin/teste-emails-vencimento", verificarToken, async (req, res) => {
 
 app.post("/admin/telegram/teste", verificarToken, async (req, res) => {
   try {
-    const { texto } = req.body || {};
+    const { texto, tipo } = req.body || {};
     const msg = String(texto || "Teste Telegram - SG IPTV").trim();
 
-    const ok = await enviarTelegramAvisoAdmin(msg);
+    const tipoMsg = String(tipo || "default").trim();
+    const ok = await enviarTelegramAvisoAdmin(msg, tipoMsg);
     if (!ok) {
       return res.status(400).json({ error: "Telegram nao configurado (TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID) ou falha ao enviar." });
     }
