@@ -48,8 +48,44 @@ CREATE TABLE IF NOT EXISTS clientes (
   nome TEXT,
   aviso_3d_em TIMESTAMPTZ,
   aviso_1d_em TIMESTAMPTZ,
+  revendedor_id BIGINT,
+  revendedor_vinculado_em TIMESTAMPTZ,
   atualizado_em TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE INDEX IF NOT EXISTS clientes_usuario_idx
   ON clientes (usuario);
+
+CREATE TABLE IF NOT EXISTS revendedores (
+  id BIGSERIAL PRIMARY KEY,
+  codigo TEXT NOT NULL UNIQUE,
+  email TEXT NOT NULL UNIQUE,
+  senha_hash TEXT NOT NULL,
+  nome_completo TEXT,
+  pix_cpf TEXT UNIQUE,
+  banco_nome TEXT,
+  criado_em TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  atualizado_em TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS comissoes (
+  id BIGSERIAL PRIMARY KEY,
+  revendedor_id BIGINT NOT NULL REFERENCES revendedores(id) ON DELETE CASCADE,
+  cliente_id BIGINT NOT NULL REFERENCES clientes(id) ON DELETE CASCADE,
+  pagamento_id BIGINT NOT NULL REFERENCES pagamentos(id) ON DELETE CASCADE,
+  tipo TEXT NOT NULL,
+  valor NUMERIC(10,2) NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pendente',
+  transacao_id TEXT,
+  criado_em TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  pago_em TIMESTAMPTZ,
+  atualizado_em TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT comissoes_tipo_check CHECK (tipo IN ('primeira_compra', 'renovacao')),
+  CONSTRAINT comissoes_status_check CHECK (status IN ('pendente', 'processando', 'pago', 'falhou'))
+);
+
+CREATE INDEX IF NOT EXISTS comissoes_revendedor_status_idx
+  ON comissoes (revendedor_id, status);
+
+CREATE INDEX IF NOT EXISTS comissoes_cliente_idx
+  ON comissoes (cliente_id);

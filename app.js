@@ -979,6 +979,50 @@ db.query(`ALTER TABLE clientes ADD COLUMN IF NOT EXISTS aviso_1d_em TIMESTAMPTZ`
   .then(() => console.log("Coluna clientes.aviso_1d_em OK"))
   .catch(err => console.error("Erro ao garantir coluna clientes.aviso_1d_em:", err));
 
+db.query(`ALTER TABLE clientes ADD COLUMN IF NOT EXISTS revendedor_id BIGINT`)
+  .then(() => console.log("Coluna clientes.revendedor_id OK"))
+  .catch(err => console.error("Erro ao garantir coluna clientes.revendedor_id:", err));
+
+db.query(`ALTER TABLE clientes ADD COLUMN IF NOT EXISTS revendedor_vinculado_em TIMESTAMPTZ`)
+  .then(() => console.log("Coluna clientes.revendedor_vinculado_em OK"))
+  .catch(err => console.error("Erro ao garantir coluna clientes.revendedor_vinculado_em:", err));
+
+db.query(`
+  CREATE TABLE IF NOT EXISTS revendedores (
+    id BIGSERIAL PRIMARY KEY,
+    codigo TEXT NOT NULL UNIQUE,
+    email TEXT NOT NULL UNIQUE,
+    senha_hash TEXT NOT NULL,
+    nome_completo TEXT,
+    pix_cpf TEXT UNIQUE,
+    banco_nome TEXT,
+    criado_em TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    atualizado_em TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  )
+`)
+  .then(() => console.log("Tabela revendedores OK"))
+  .catch(err => console.error("Erro ao garantir tabela revendedores:", err));
+
+db.query(`
+  CREATE TABLE IF NOT EXISTS comissoes (
+    id BIGSERIAL PRIMARY KEY,
+    revendedor_id BIGINT NOT NULL REFERENCES revendedores(id) ON DELETE CASCADE,
+    cliente_id BIGINT NOT NULL REFERENCES clientes(id) ON DELETE CASCADE,
+    pagamento_id BIGINT NOT NULL REFERENCES pagamentos(id) ON DELETE CASCADE,
+    tipo TEXT NOT NULL,
+    valor NUMERIC(10, 2) NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pendente',
+    transacao_id TEXT,
+    criado_em TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    pago_em TIMESTAMPTZ,
+    atualizado_em TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT comissoes_tipo_check CHECK (tipo IN ('primeira_compra', 'renovacao')),
+    CONSTRAINT comissoes_status_check CHECK (status IN ('pendente', 'processando', 'pago', 'falhou'))
+  )
+`)
+  .then(() => console.log("Tabela comissoes OK"))
+  .catch(err => console.error("Erro ao garantir tabela comissoes:", err));
+
 db.query(`ALTER TABLE testes_iptv ADD COLUMN IF NOT EXISTS login TEXT`)
   .then(() => console.log("Coluna testes_iptv.login OK"))
   .catch(err => console.error("Erro ao garantir coluna testes_iptv.login:", err));
@@ -1395,6 +1439,56 @@ app.put("/clientes/:id", verificarToken, async (req, res) => {
   } catch (error) {
     console.error("Erro ao atualizar cliente:", error);
     res.status(500).json({ error: "Erro ao atualizar cliente" });
+  }
+});
+
+app.get("/revendedores", verificarToken, async (req, res) => {
+  try {
+    const result = await db.query(
+      `
+      SELECT
+        r.id,
+        r.codigo,
+        r.email,
+        r.pix_cpf,
+        COALESCE(SUM(CASE WHEN c.status = 'pendente' THEN c.valor ELSE 0 END), 0) AS total_pendente
+      FROM revendedores r
+      LEFT JOIN comissoes c ON c.revendedor_id = r.id
+      GROUP BY r.id
+      ORDER BY r.id DESC
+      `
+    );
+
+    res.json({ ok: true, revendedores: result.rows });
+  } catch (error) {
+    console.error("Erro ao buscar revendedores:", error);
+    res.status(500).json({ error: "Erro ao buscar revendedores." });
+  }
+});
+
+app.get("/revendedores/:id/comissoes", verificarToken, async (req, res) => {
+  const id = String(req.params.id || "").trim();
+
+  if (!id) {
+    return res.status(400).json({ error: "Informe o id do revendedor." });
+  }
+
+  try {
+    const result = await db.query(
+      `
+      SELECT *
+      FROM comissoes
+      WHERE revendedor_id = $1
+      ORDER BY id DESC
+      LIMIT 200
+      `,
+      [id]
+    );
+
+    res.json({ ok: true, comissoes: result.rows });
+  } catch (error) {
+    console.error("Erro ao buscar comissoes do revendedor:", error);
+    res.status(500).json({ error: "Erro ao buscar comissoes do revendedor." });
   }
 });
 
