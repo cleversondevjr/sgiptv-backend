@@ -639,6 +639,28 @@ async function enviarTelegramAvisoAdmin(texto) {
 
 async function notificarVendaAdmin({ tipo, pagamento, origem }) {
   const p = enriquecerPagamento(pagamento);
+
+  let credenciais = null;
+  try {
+    if (p.email && p.telefone) {
+      const credResult = await db.query(
+        `
+        SELECT usuario, senha
+        FROM clientes
+        WHERE email = $1
+        AND telefone = $2
+        ORDER BY id DESC
+        LIMIT 1
+        `,
+        [String(p.email).trim().toLowerCase(), String(p.telefone).replace(/\D/g, "")]
+      );
+
+      credenciais = credResult.rows[0] || null;
+    }
+  } catch (error) {
+    console.error("Erro ao buscar credenciais do cliente para aviso:", error);
+  }
+
   const linhas = [
     `SG IPTV - ${tipo}`,
     "",
@@ -646,6 +668,8 @@ async function notificarVendaAdmin({ tipo, pagamento, origem }) {
     `Valor: R$ ${p.valor}`,
     `Email: ${p.email}`,
     `WhatsApp cliente: ${p.telefone}`,
+    credenciais?.usuario ? `Usuario: ${credenciais.usuario}` : null,
+    credenciais?.senha ? `Senha: ${credenciais.senha}` : null,
     `Payment ID: ${p.payment_id}`,
     origem ? `Origem: ${origem}` : null,
     "",
@@ -665,6 +689,8 @@ async function notificarVendaAdmin({ tipo, pagamento, origem }) {
           <p><strong>Valor:</strong> R$ ${escaparHtml(p.valor)}</p>
           <p><strong>Email:</strong> ${escaparHtml(p.email)}</p>
           <p><strong>WhatsApp cliente:</strong> ${escaparHtml(p.telefone)}</p>
+          ${credenciais?.usuario ? `<p><strong>Usuario:</strong> ${escaparHtml(credenciais.usuario)}</p>` : ""}
+          ${credenciais?.senha ? `<p><strong>Senha:</strong> ${escaparHtml(credenciais.senha)}</p>` : ""}
           <p><strong>Payment ID:</strong> ${escaparHtml(p.payment_id)}</p>
           ${origem ? `<p><strong>Origem:</strong> ${escaparHtml(origem)}</p>` : ""}
           <hr style="border-color:#7e22ce;">
