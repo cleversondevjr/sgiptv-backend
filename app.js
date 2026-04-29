@@ -450,6 +450,25 @@ function criarBotaoPainelAdmin() {
 }
 
 function criarTransporterEmail() {
+  const smtpHost = String(process.env.SMTP_HOST || "").trim();
+  const smtpUser = String(process.env.SMTP_USER || "").trim();
+  const smtpPass = String(process.env.SMTP_PASS || "").trim();
+
+  if (smtpHost && smtpUser && smtpPass) {
+    const port = Number(process.env.SMTP_PORT || 587);
+    const secure = String(process.env.SMTP_SECURE || "false").trim().toLowerCase() === "true";
+
+    return nodemailer.createTransport({
+      host: smtpHost,
+      port,
+      secure,
+      auth: {
+        user: smtpUser,
+        pass: smtpPass
+      }
+    });
+  }
+
   if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) return null;
 
   return nodemailer.createTransport({
@@ -466,12 +485,16 @@ async function enviarEmailAvisoAdmin({ assunto, html, text }) {
     const transporter = criarTransporterEmail();
 
     if (!transporter) {
-      console.log("Email admin não enviado: EMAIL_USER ou EMAIL_PASS ausente.");
+      console.log("Email admin nao enviado: configure SMTP_HOST/SMTP_USER/SMTP_PASS ou EMAIL_USER/EMAIL_PASS.");
       return false;
     }
 
+    const fromEmail = String(process.env.EMAIL_FROM || process.env.SMTP_USER || process.env.EMAIL_USER || "").trim();
+    const fromName = String(process.env.EMAIL_FROM_NAME || "SG IPTV").trim();
+    const from = fromEmail ? `"${fromName}" <${fromEmail}>` : undefined;
+
     await transporter.sendMail({
-      from: `"SG IPTV" <${process.env.EMAIL_USER}>`,
+      ...(from ? { from } : {}),
       to: ADMIN_EMAIL_AVISOS,
       subject: assunto,
       text,
@@ -621,7 +644,7 @@ Painel Admin: ${ADMIN_PANEL_URL}
 async function enviarEmailVencimentoTeste({ dias, cliente }) {
   const transporter = criarTransporterEmail();
   if (!transporter) {
-    throw new Error("EMAIL_USER/EMAIL_PASS nao configurado no backend.");
+    throw new Error("Email nao configurado no backend. Defina SMTP_HOST/SMTP_USER/SMTP_PASS (Brevo) ou EMAIL_USER/EMAIL_PASS (Gmail).");
   }
 
   const tipo = `Vencimento em ${dias} dia${dias === 1 ? "" : "s"}`;
@@ -640,8 +663,12 @@ WhatsApp: ${cliente.telefone || "-"}
 Painel Admin: ${ADMIN_PANEL_URL}
   `.trim();
 
+  const fromEmail = String(process.env.EMAIL_FROM || process.env.SMTP_USER || process.env.EMAIL_USER || "").trim();
+  const fromName = String(process.env.EMAIL_FROM_NAME || "SG IPTV").trim();
+  const from = fromEmail ? `"${fromName}" <${fromEmail}>` : undefined;
+
   await transporter.sendMail({
-    from: `"SG IPTV" <${process.env.EMAIL_USER}>`,
+    ...(from ? { from } : {}),
     to: ADMIN_EMAIL_VENCIMENTOS,
     subject: `${tipo} (TESTE) - ${cliente.usuario}`,
     text: texto
