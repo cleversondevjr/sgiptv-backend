@@ -455,8 +455,11 @@ function criarTransporterEmail() {
     // Fallback via HTTP (porta 443), evita timeout de SMTP em alguns hosts.
     return {
       async sendMail({ from, to, subject, text, html }) {
-        const fromEmail = extrairEmailFrom(from) || String(process.env.EMAIL_FROM || "").trim() || null;
-        const fromName = extrairNomeFrom(from) || String(process.env.EMAIL_FROM_NAME || "SG IPTV").trim();
+        const baseFrom = String(from || process.env.EMAIL_FROM || "").trim();
+        const fromEmail = extrairEmailFrom(baseFrom) || null;
+        const fromName =
+          extrairNomeFrom(baseFrom) ||
+          String(process.env.EMAIL_FROM_NAME || "SG IPTV").trim();
 
         if (!fromEmail) {
           throw new Error("EMAIL_FROM (ou from) nao configurado para envio via Brevo API.");
