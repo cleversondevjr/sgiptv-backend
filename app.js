@@ -901,6 +901,37 @@ async function limparPagamentosCanceladosAntigos() {
   }
 }
 
+function verificarTokenRevendedor(req, res, next) {
+  const authorization = String(req.headers.authorization || "").trim();
+  const token = authorization.toLowerCase().startsWith("bearer ")
+    ? authorization.slice(7).trim()
+    : authorization;
+
+  if (!token) {
+    return res.status(401).json({ error: "Token nao enviado" });
+  }
+
+  try {
+    const payload = jwt.verify(token, JWT_SECRET);
+    if (payload?.role !== "revendedor" || !payload?.rid) {
+      return res.status(401).json({ error: "Token invalido" });
+    }
+    req.revendedor = { id: payload.rid };
+    next();
+  } catch (error) {
+    return res.status(401).json({ error: "Token invalido" });
+  }
+}
+
+function gerarCodigoRevendedor() {
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  let out = "";
+  for (let i = 0; i < 8; i++) {
+    out += chars[Math.floor(Math.random() * chars.length)];
+  }
+  return out;
+}
+
 app.post("/login", limiteLogin, (req, res) => {
   const { usuario, senha } = req.body;
 
@@ -919,9 +950,173 @@ app.post("/login", limiteLogin, (req, res) => {
     });
 });
 
+app.post("/revendedor/register", async (req, res) => {
+  const email = String(req.body?.email || "").trim().toLowerCase();
+  const senha = String(req.body?.senha || "").trim();
+  const nomeCompleto = String(req.body?.nome_completo || "").trim() || null;
+  const pixCpf = String(req.body?.pix_cpf || "").replace(/\D/g, "") || null;
+  const bancoNome = String(req.body?.banco_nome || "").trim() || null;
+
+  if (!email || !senha) {
+    return res.status(400).json({ error: "Informe email e senha." });
+  }
+
+  if (pixCpf && pixCpf.length !== 11) {
+    return res.status(400).json({ error: "PIX deve ser CPF (11 digitos)." });
+  }
+
+  try {
+    const senhaHash = await bcrypt.hash(senha, 10);
+
+    let codigo = gerarCodigoRevendedor();
+    for (let tentativas = 0; tentativas < 5; tentativas++) {
+      const existe = await db.query("SELECT 1 FROM revendedores WHERE codigo = $1", [codigo]);
+      if (existe.rows.length === 0) break;
+      codigo = gerarCodigoRevendedor();
+    }
+
+    await db.query(
+      `
+      INSERT INTO revendedores (codigo, email, senha_hash, nome_completo, pix_cpf, banco_nome)
+      VALUES ($1, $2, $3, $4, $5, $6)
+      `,
+      [codigo, email, senhaHash, nomeCompleto, pixCpf, bancoNome]
+    );
+
+    return res.json({ ok: true, codigo });
+  } catch (error) {
+    console.error("Erro ao cadastrar revendedor:", error);
+    return res.status(500).json({ error: "Erro ao cadastrar revendedor." });
+  }
+});
+
+app.post("/revendedor/login", async (req, res) => {
+  const email = String(req.body?.email || "").trim().toLowerCase();
+  const senha = String(req.body?.senha || "").trim();
+
+  if (!email || !senha) {
+    return res.status(400).json({ error: "Informe email e senha." });
+  }
+
+  try {
+    const result = await db.query("SELECT * FROM revendedores WHERE email = $1", [email]);
+    if (result.rows.length === 0) {
+      return res.status(401).json({ error: "Email ou senha invalidos." });
+    }
+
+    const rev = result.rows[0];
+    const ok = await bcrypt.compare(senha, rev.senha_hash);
+    if (!ok) {
+      return res.status(401).json({ error: "Email ou senha invalidos." });
+    }
+
+    const token = jwt.sign({ role: "revendedor", rid: rev.id }, JWT_SECRET, { expiresIn: "7d" });
+    return res.json({ ok: true, token });
+  } catch (error) {
+    console.error("Erro login revendedor:", error);
+    return res.status(500).json({ error: "Erro ao entrar." });
+  }
+});
+
+app.get("/revendedor/me", verificarTokenRevendedor, async (req, res) => {
+  const rid = req.revendedor.id;
+
+  try {
+    const rev = await db.query("SELECT id, codigo, email, nome_completo, pix_cpf, banco_nome FROM revendedores WHERE id = $1", [rid]);
+    if (rev.rows.length === 0) return res.status(404).json({ error: "Revendedor nao encontrado." });
+
+    const pend = await db.query(
+      "SELECT COALESCE(SUM(valor),0) AS total FROM comissoes WHERE revendedor_id = $1 AND status = 'pendente'",
+      [rid]
+    );
+
+    const stats = await db.query(
+      `
+      WITH mes AS (
+        SELECT date_trunc('month', NOW()) AS inicio,
+               date_trunc('month', NOW()) + interval '1 month' AS fim
+      )
+      SELECT
+        COALESCE((
+          SELECT COUNT(DISTINCT cl.id)
+          FROM pagamentos p
+          JOIN clientes cl ON cl.usuario = p.cliente_usuario
+          JOIN mes m ON TRUE
+          WHERE p.status = 'confirmado'
+            AND p.confirmado_em >= m.inicio
+            AND p.confirmado_em < m.fim
+            AND cl.revendedor_id = $1
+        ), 0) AS clientes_ativos_mes
+      `,
+      [rid]
+    );
+
+    const clientesAtivosMes = Number(stats.rows[0]?.clientes_ativos_mes || 0);
+    const bonusMes = clientesAtivosMes >= 15 ? 50 : 0;
+
+    return res.json({
+      ok: true,
+      revendedor: rev.rows[0],
+      resumo: {
+        total_pendente: Number(pend.rows[0]?.total || 0),
+        clientes_ativos_mes: clientesAtivosMes,
+        bonus_mes: bonusMes
+      }
+    });
+  } catch (error) {
+    console.error("Erro revendedor/me:", error);
+    return res.status(500).json({ error: "Erro ao carregar painel." });
+  }
+});
+
+app.get("/revendedor/comissoes", verificarTokenRevendedor, async (req, res) => {
+  const rid = req.revendedor.id;
+
+  try {
+    const result = await db.query(
+      `
+      SELECT id, tipo, valor, status, transacao_id, criado_em, pago_em
+      FROM comissoes
+      WHERE revendedor_id = $1
+      ORDER BY id DESC
+      LIMIT 200
+      `,
+      [rid]
+    );
+
+    return res.json({ ok: true, comissoes: result.rows });
+  } catch (error) {
+    console.error("Erro revendedor/comissoes:", error);
+    return res.status(500).json({ error: "Erro ao buscar comissoes." });
+  }
+});
+
 db.query("SELECT NOW()")
   .then(res => console.log("Banco conectado:", res.rows))
   .catch(err => console.error("Erro no banco:", err));
+
+async function limparRevendedoresSemClientesAtivos() {
+  try {
+    await db.query(
+      `
+      DELETE FROM revendedores r
+      WHERE r.criado_em <= NOW() - interval '7 days'
+      AND NOT EXISTS (
+        SELECT 1
+        FROM clientes c
+        WHERE c.revendedor_id = r.id
+        AND c.vencimento > NOW()
+      )
+      `
+    );
+  } catch (error) {
+    console.error("Erro ao limpar revendedores sem clientes ativos:", error);
+  }
+}
+
+// Rodamos em background: evita acumular revendedores sem nenhum cliente ativo.
+setInterval(limparRevendedoresSemClientesAtivos, 12 * 60 * 60 * 1000);
+limparRevendedoresSemClientesAtivos();
 
 db.query(`ALTER TABLE pagamentos ADD COLUMN IF NOT EXISTS aviso_24h_enviado_em TIMESTAMPTZ`)
   .then(() => console.log("Coluna aviso_24h_enviado_em OK"))
@@ -1446,12 +1641,40 @@ app.get("/revendedores", verificarToken, async (req, res) => {
   try {
     const result = await db.query(
       `
+      WITH mes AS (
+        SELECT date_trunc('month', NOW()) AS inicio,
+               date_trunc('month', NOW()) + interval '1 month' AS fim
+      )
       SELECT
         r.id,
         r.codigo,
         r.email,
+        r.nome_completo,
         r.pix_cpf,
-        COALESCE(SUM(CASE WHEN c.status = 'pendente' THEN c.valor ELSE 0 END), 0) AS total_pendente
+        COALESCE(SUM(CASE WHEN c.status = 'pendente' THEN c.valor ELSE 0 END), 0) AS total_pendente,
+        COALESCE((
+          SELECT COUNT(DISTINCT cl.id)
+          FROM pagamentos p
+          JOIN clientes cl ON cl.usuario = p.cliente_usuario
+          JOIN mes m ON TRUE
+          WHERE p.status = 'confirmado'
+            AND p.confirmado_em >= m.inicio
+            AND p.confirmado_em < m.fim
+            AND cl.revendedor_id = r.id
+        ), 0) AS clientes_ativos_mes,
+        CASE
+          WHEN COALESCE((
+            SELECT COUNT(DISTINCT cl2.id)
+            FROM pagamentos p2
+            JOIN clientes cl2 ON cl2.usuario = p2.cliente_usuario
+            JOIN mes m2 ON TRUE
+            WHERE p2.status = 'confirmado'
+              AND p2.confirmado_em >= m2.inicio
+              AND p2.confirmado_em < m2.fim
+              AND cl2.revendedor_id = r.id
+          ), 0) >= 15 THEN 50
+          ELSE 0
+        END AS bonus_mes
       FROM revendedores r
       LEFT JOIN comissoes c ON c.revendedor_id = r.id
       GROUP BY r.id
@@ -1489,6 +1712,31 @@ app.get("/revendedores/:id/comissoes", verificarToken, async (req, res) => {
   } catch (error) {
     console.error("Erro ao buscar comissoes do revendedor:", error);
     res.status(500).json({ error: "Erro ao buscar comissoes do revendedor." });
+  }
+});
+
+app.get("/revendedores/:id/clientes", verificarToken, async (req, res) => {
+  const id = String(req.params.id || "").trim();
+
+  if (!id) {
+    return res.status(400).json({ error: "Informe o id do revendedor." });
+  }
+
+  try {
+    const result = await db.query(
+      `
+      SELECT id, usuario, plano, vencimento, nome, email, telefone
+      FROM clientes
+      WHERE revendedor_id = $1
+      ORDER BY vencimento DESC, id DESC
+      `,
+      [id]
+    );
+
+    return res.json({ ok: true, clientes: result.rows });
+  } catch (error) {
+    console.error("Erro ao buscar clientes do revendedor:", error);
+    return res.status(500).json({ error: "Erro ao buscar clientes do revendedor." });
   }
 });
 
