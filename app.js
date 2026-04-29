@@ -977,13 +977,18 @@ app.post("/revendedor/register", async (req, res) => {
 
     await db.query(
       `
-      INSERT INTO revendedores (codigo, email, senha_hash, nome_completo, pix_cpf, banco_nome)
-      VALUES ($1, $2, $3, $4, $5, $6)
+      INSERT INTO revendedores (codigo, email, senha_hash, nome_completo, pix_cpf, banco_nome, status)
+      VALUES ($1, $2, $3, $4, $5, $6, $7)
       `,
-      [codigo, email, senhaHash, nomeCompleto, pixCpf, bancoNome]
+      [codigo, email, senhaHash, nomeCompleto, pixCpf, bancoNome, "pendente"]
     );
 
-    return res.json({ ok: true, codigo });
+    return res.json({
+      ok: true,
+      codigo,
+      status: "pendente",
+      mensagem: "Cadastro realizado com sucesso. Aguarde ate 24 horas para aprovacao do master."
+    });
   } catch (error) {
     console.error("Erro ao cadastrar revendedor:", error);
     return res.status(500).json({ error: "Erro ao cadastrar revendedor." });
@@ -1005,6 +1010,9 @@ app.post("/revendedor/login", async (req, res) => {
     }
 
     const rev = result.rows[0];
+    if (rev.status !== "aprovado") {
+      return res.status(403).json({ error: "Seu cadastro ainda nao foi aprovado. Aguarde ate 24 horas." });
+    }
     const ok = await bcrypt.compare(senha, rev.senha_hash);
     if (!ok) {
       return res.status(401).json({ error: "Email ou senha invalidos." });
@@ -1191,12 +1199,27 @@ db.query(`
     nome_completo TEXT,
     pix_cpf TEXT UNIQUE,
     banco_nome TEXT,
+    status TEXT NOT NULL DEFAULT 'pendente',
+    aprovado_em TIMESTAMPTZ,
+    reprovado_em TIMESTAMPTZ,
     criado_em TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     atualizado_em TIMESTAMPTZ NOT NULL DEFAULT NOW()
   )
 `)
   .then(() => console.log("Tabela revendedores OK"))
   .catch(err => console.error("Erro ao garantir tabela revendedores:", err));
+
+db.query(`ALTER TABLE revendedores ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'pendente'`)
+  .then(() => console.log("Coluna revendedores.status OK"))
+  .catch(err => console.error("Erro ao garantir coluna revendedores.status:", err));
+
+db.query(`ALTER TABLE revendedores ADD COLUMN IF NOT EXISTS aprovado_em TIMESTAMPTZ`)
+  .then(() => console.log("Coluna revendedores.aprovado_em OK"))
+  .catch(err => console.error("Erro ao garantir coluna revendedores.aprovado_em:", err));
+
+db.query(`ALTER TABLE revendedores ADD COLUMN IF NOT EXISTS reprovado_em TIMESTAMPTZ`)
+  .then(() => console.log("Coluna revendedores.reprovado_em OK"))
+  .catch(err => console.error("Erro ao garantir coluna revendedores.reprovado_em:", err));
 
 db.query(`
   CREATE TABLE IF NOT EXISTS comissoes (
@@ -1651,6 +1674,7 @@ app.get("/revendedores", verificarToken, async (req, res) => {
         r.email,
         r.nome_completo,
         r.pix_cpf,
+        r.status,
         COALESCE(SUM(CASE WHEN c.status = 'pendente' THEN c.valor ELSE 0 END), 0) AS total_pendente,
         COALESCE((
           SELECT COUNT(DISTINCT cl.id)
@@ -1737,6 +1761,58 @@ app.get("/revendedores/:id/clientes", verificarToken, async (req, res) => {
   } catch (error) {
     console.error("Erro ao buscar clientes do revendedor:", error);
     return res.status(500).json({ error: "Erro ao buscar clientes do revendedor." });
+  }
+});
+
+app.put("/revendedores/:id/aprovar", verificarToken, async (req, res) => {
+  const id = String(req.params.id || "").trim();
+  if (!id) return res.status(400).json({ error: "Informe o id do revendedor." });
+
+  try {
+    const result = await db.query(
+      `
+      UPDATE revendedores
+      SET status = 'aprovado',
+          aprovado_em = NOW(),
+          reprovado_em = NULL,
+          atualizado_em = NOW()
+      WHERE id = $1
+      RETURNING id, codigo, email, status
+      `,
+      [id]
+    );
+
+    if (result.rows.length === 0) return res.status(404).json({ error: "Revendedor nao encontrado." });
+    return res.json({ ok: true, revendedor: result.rows[0] });
+  } catch (error) {
+    console.error("Erro ao aprovar revendedor:", error);
+    return res.status(500).json({ error: "Erro ao aprovar revendedor." });
+  }
+});
+
+app.put("/revendedores/:id/reprovar", verificarToken, async (req, res) => {
+  const id = String(req.params.id || "").trim();
+  if (!id) return res.status(400).json({ error: "Informe o id do revendedor." });
+
+  try {
+    const result = await db.query(
+      `
+      UPDATE revendedores
+      SET status = 'reprovado',
+          reprovado_em = NOW(),
+          aprovado_em = NULL,
+          atualizado_em = NOW()
+      WHERE id = $1
+      RETURNING id, codigo, email, status
+      `,
+      [id]
+    );
+
+    if (result.rows.length === 0) return res.status(404).json({ error: "Revendedor nao encontrado." });
+    return res.json({ ok: true, revendedor: result.rows[0] });
+  } catch (error) {
+    console.error("Erro ao reprovar revendedor:", error);
+    return res.status(500).json({ error: "Erro ao reprovar revendedor." });
   }
 });
 
