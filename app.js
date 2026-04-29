@@ -1190,6 +1190,13 @@ app.post("/admin/pix/teste", verificarToken, async (req, res) => {
 
     const data = result.point_of_interaction.transaction_data;
 
+    // Notifica admin (email/telegram/whatsapp se configurado) para validar o fluxo.
+    await notificarVendaAdmin({
+      tipo: "Novo Pix gerado (teste)",
+      pagamento: { email, telefone, plano, valor, payment_id: paymentId },
+      origem: "admin/pix/teste"
+    });
+
     res.json({
       ok: true,
       qr_code: data.qr_code,
@@ -1615,6 +1622,23 @@ app.post("/admin/teste-emails-vencimento", verificarToken, async (req, res) => {
   } catch (error) {
     console.error("Erro ao enviar emails teste:", error);
     return res.status(500).json({ error: String(error?.message || "Erro ao enviar emails teste.") });
+  }
+});
+
+app.post("/admin/telegram/teste", verificarToken, async (req, res) => {
+  try {
+    const { texto } = req.body || {};
+    const msg = String(texto || "Teste Telegram - SG IPTV").trim();
+
+    const ok = await enviarTelegramAvisoAdmin(msg);
+    if (!ok) {
+      return res.status(400).json({ error: "Telegram nao configurado (TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID) ou falha ao enviar." });
+    }
+
+    return res.json({ ok: true });
+  } catch (error) {
+    console.error("Erro ao testar Telegram:", error);
+    return res.status(500).json({ error: "Erro ao testar Telegram." });
   }
 });
 
