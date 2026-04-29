@@ -712,27 +712,54 @@ async function sincronizarPagamentoMercadoPago(pagamento) {
 }
 
 async function cancelarPagamentosPixExpirados() {
-  await db.query(
-    `
-    UPDATE pagamentos
-    SET status = $1,
-        cancelado_em = NOW()
-    WHERE status = $2
-    AND criado_em <= NOW() - ($3 || ' minutes')::interval
-    `,
-    ["cancelado", "pendente", PIX_EXPIRACAO_MINUTOS]
-  );
+  try {
+    await db.query(
+      `
+      UPDATE pagamentos
+      SET status = $1,
+          cancelado_em = NOW()
+      WHERE status = $2
+      AND criado_em <= NOW() - ($3 || ' minutes')::interval
+      `,
+      ["cancelado", "pendente", PIX_EXPIRACAO_MINUTOS]
+    );
+  } catch (error) {
+    // Se a coluna ainda nao existir (migracao async), faz fallback sem cancelado_em.
+    console.error("Erro ao cancelar Pix expirados (com cancelado_em). Tentando fallback:", error);
+    await db.query(
+      `
+      UPDATE pagamentos
+      SET status = $1
+      WHERE status = $2
+      AND criado_em <= NOW() - ($3 || ' minutes')::interval
+      `,
+      ["cancelado", "pendente", PIX_EXPIRACAO_MINUTOS]
+    );
+  }
 }
 
 async function limparPagamentosCanceladosAntigos() {
-  await db.query(
-    `
-    DELETE FROM pagamentos
-    WHERE status = $1
-    AND COALESCE(cancelado_em, atualizado_em, criado_em) <= NOW() - ($2 || ' minutes')::interval
-    `,
-    ["cancelado", PIX_EXPIRACAO_MINUTOS]
-  );
+  try {
+    await db.query(
+      `
+      DELETE FROM pagamentos
+      WHERE status = $1
+      AND COALESCE(cancelado_em, atualizado_em, criado_em) <= NOW() - ($2 || ' minutes')::interval
+      `,
+      ["cancelado", PIX_EXPIRACAO_MINUTOS]
+    );
+  } catch (error) {
+    // Fallback quando cancelado_em ainda nao existe.
+    console.error("Erro ao limpar cancelados (com cancelado_em). Tentando fallback:", error);
+    await db.query(
+      `
+      DELETE FROM pagamentos
+      WHERE status = $1
+      AND criado_em <= NOW() - ($2 || ' minutes')::interval
+      `,
+      ["cancelado", PIX_EXPIRACAO_MINUTOS]
+    );
+  }
 }
 
 app.post("/login", limiteLogin, (req, res) => {
@@ -1448,13 +1475,17 @@ app.post("/admin/teste-emails-vencimento", verificarToken, async (req, res) => {
 
     const cliente = result.rows[0];
 
-    await enviarEmailVencimentoTeste({ dias: 3, cliente });
-    await enviarEmailVencimentoTeste({ dias: 1, cliente });
+    try {
+      await enviarEmailVencimentoTeste({ dias: 3, cliente });
+      await enviarEmailVencimentoTeste({ dias: 1, cliente });
+    } catch (mailError) {
+      return res.status(400).json({ error: String(mailError?.message || mailError || "Falha ao enviar email.") });
+    }
 
     return res.json({ ok: true });
   } catch (error) {
     console.error("Erro ao enviar emails teste:", error);
-    return res.status(500).json({ error: "Erro ao enviar emails teste." });
+    return res.status(500).json({ error: String(error?.message || "Erro ao enviar emails teste.") });
   }
 });
 
