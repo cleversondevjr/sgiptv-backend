@@ -873,7 +873,7 @@ async function limparPagamentosCanceladosAntigos() {
       `
       DELETE FROM pagamentos
       WHERE status = $1
-      AND COALESCE(cancelado_em, atualizado_em, criado_em) <= NOW() - ($2 || ' minutes')::interval
+      AND COALESCE(cancelado_em, criado_em) <= NOW() - ($2 || ' minutes')::interval
       `,
       ["cancelado", PIX_EXPIRACAO_MINUTOS]
     );
@@ -928,6 +928,10 @@ db.query(`ALTER TABLE pagamentos ADD COLUMN IF NOT EXISTS confirmado_em TIMESTAM
 db.query(`ALTER TABLE pagamentos ADD COLUMN IF NOT EXISTS notificado_em TIMESTAMPTZ`)
   .then(() => console.log("Coluna pagamentos.notificado_em OK"))
   .catch(err => console.error("Erro ao garantir coluna pagamentos.notificado_em:", err));
+
+db.query(`ALTER TABLE pagamentos ADD COLUMN IF NOT EXISTS atualizado_em TIMESTAMPTZ NOT NULL DEFAULT NOW()`)
+  .then(() => console.log("Coluna pagamentos.atualizado_em OK"))
+  .catch(err => console.error("Erro ao garantir coluna pagamentos.atualizado_em:", err));
 
 db.query(`
   CREATE TABLE IF NOT EXISTS clientes (
@@ -1885,37 +1889,6 @@ app.get("/testes-iptv", verificarToken, async (req, res) => {
         login: dados.login,
         senha: dados.senha
       });
-    }
-
-    // Garante que todo teste novo apareca tambem na lista de clientes (login/senha).
-    try {
-      await db.query(
-        `
-        INSERT INTO clientes (usuario, senha, plano, conexoes, criado_em, vencimento, email, telefone)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-        ON CONFLICT (usuario) DO UPDATE SET
-          senha = EXCLUDED.senha,
-          plano = EXCLUDED.plano,
-          conexoes = EXCLUDED.conexoes,
-          criado_em = EXCLUDED.criado_em,
-          vencimento = EXCLUDED.vencimento,
-          email = EXCLUDED.email,
-          telefone = EXCLUDED.telefone,
-          atualizado_em = NOW()
-        `,
-        [
-          dadosTeste.login,
-          dadosTeste.senha,
-          "TESTE GRATUITO",
-          1,
-          agoraIso,
-          vencimentoTeste,
-          email,
-          telefone
-        ]
-      );
-    } catch (clienteError) {
-      console.error("Erro ao salvar teste em clientes:", clienteError);
     }
 
     res.json(lista);
