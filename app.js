@@ -69,6 +69,7 @@ const ADMIN_EMAIL_AVISOS = "suportesgiptv01@gmail.com";
 const ADMIN_WHATSAPP_AVISOS = "5511919628194";
 const ADMIN_PANEL_URL = "https://sgiptv.com.br/admin.html";
 const ADMIN_EMAIL_VENCIMENTOS = "suportesgiptv01@gmail.com";
+const TELEGRAM_TIMEOUT_MS = Number(process.env.TELEGRAM_TIMEOUT_MS || 8000);
 
 const PLANOS = {
   mensal_1_tela: {
@@ -597,6 +598,45 @@ async function enviarWhatsappAvisoAdmin(texto) {
   }
 }
 
+async function enviarTelegramAvisoAdmin(texto) {
+  const token = String(process.env.TELEGRAM_BOT_TOKEN || "").trim();
+  const chatId = String(process.env.TELEGRAM_CHAT_ID || "").trim();
+
+  if (!token || !chatId) {
+    return false;
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), TELEGRAM_TIMEOUT_MS);
+
+  try {
+    const url = `https://api.telegram.org/bot${encodeURIComponent(token)}/sendMessage`;
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id: chatId,
+        text: texto,
+        disable_web_page_preview: true
+      }),
+      signal: controller.signal
+    });
+
+    clearTimeout(timer);
+
+    if (!res.ok) {
+      console.error("Erro ao enviar Telegram admin:", await res.text());
+      return false;
+    }
+
+    return true;
+  } catch (error) {
+    clearTimeout(timer);
+    console.error("Erro ao enviar Telegram admin:", error);
+    return false;
+  }
+}
+
 async function notificarVendaAdmin({ tipo, pagamento, origem }) {
   const p = enriquecerPagamento(pagamento);
   const linhas = [
@@ -635,6 +675,7 @@ async function notificarVendaAdmin({ tipo, pagamento, origem }) {
   });
 
   await enviarWhatsappAvisoAdmin(texto);
+  await enviarTelegramAvisoAdmin(texto);
 }
 
 function phoneToBr(phoneDigits) {
