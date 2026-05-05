@@ -2206,6 +2206,28 @@ app.post("/teste-iptv", limitePublico, async (req, res) => {
     const agoraIso = new Date().toISOString();
     const vencimentoTeste = adicionarTempo(agoraIso, TESTE_DURACAO_HORAS, "horas");
 
+    // Garante que o cliente consegue entrar na Area do Cliente imediatamente apos gerar o teste,
+    // sem depender do envio de email. (usuario = login, senha = senha extraidos do painel IPTV)
+    try {
+      await db.query(
+        `
+        INSERT INTO clientes (usuario, senha, plano, conexoes, criado_em, vencimento, email, telefone, atualizado_em)
+        VALUES ($1, $2, $3, $4, NOW(), $5, $6, $7, NOW())
+        ON CONFLICT (usuario) DO UPDATE
+          SET senha = EXCLUDED.senha,
+              plano = EXCLUDED.plano,
+              conexoes = EXCLUDED.conexoes,
+              vencimento = EXCLUDED.vencimento,
+              email = EXCLUDED.email,
+              telefone = EXCLUDED.telefone,
+              atualizado_em = NOW()
+        `,
+        [dadosTeste.login, dadosTeste.senha, "TESTE GRATUITO", 1, vencimentoTeste, email, telefone]
+      );
+    } catch (clienteError) {
+      console.error("Erro ao salvar teste em clientes:", clienteError);
+    }
+
     try {
       await db.query(
         `
@@ -2322,7 +2344,10 @@ Painel Admin: ${ADMIN_PANEL_URL}
         ? "Teste gerado e enviado para seu email."
         : "Teste gerado. As configurações aparecerão na tela.",
       resposta: textoFormatado,
-      emailEnviado
+      emailEnviado,
+      usuario: dadosTeste.login,
+      senha: dadosTeste.senha,
+      vencimento: vencimentoTeste
     });
 
   } catch (error) {
