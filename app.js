@@ -1667,8 +1667,8 @@ app.put("/clientes/:id", verificarToken, async (req, res) => {
   let conexoesNumero = null;
   if (conexoes !== undefined && conexoes !== null && String(conexoes).trim() !== "") {
     const parsed = Number.parseInt(String(conexoes), 10);
-    if (Number.isNaN(parsed) || parsed < 1 || parsed > 20) {
-      return res.status(400).json({ error: "Conexoes invalido. Use um numero entre 1 e 20." });
+    if (Number.isNaN(parsed) || (parsed !== 1 && parsed !== 2)) {
+      return res.status(400).json({ error: "Conexoes invalido. Use 1 ou 2." });
     }
     conexoesNumero = parsed;
   }
@@ -1874,6 +1874,56 @@ app.put("/pagamentos/:id/confirmar", verificarToken, async (req, res) => {
   } catch (error) {
     console.error("Erro ao confirmar pagamento:", error);
     res.status(500).json({ error: "Erro ao confirmar pagamento" });
+  }
+});
+
+// Confirmacao manual (pagamento em dinheiro).
+app.post("/pagamentos/dinheiro", verificarToken, async (req, res) => {
+  const {
+    email,
+    telefone,
+    plano,
+    valor,
+    cliente_usuario,
+    cliente_senha,
+    confirmado_em
+  } = req.body || {};
+
+  const emailNorm = String(email || "").trim().toLowerCase();
+  const telNorm = String(telefone || "").replace(/\D/g, "");
+  const planoNorm = String(plano || "").trim();
+  const valorNum = Number(valor);
+
+  if (!emailNorm || !telNorm || !planoNorm || !Number.isFinite(valorNum) || valorNum <= 0) {
+    return res.status(400).json({ error: "Informe email, WhatsApp, plano e valor." });
+  }
+
+  const paymentId = `DINHEIRO-${Date.now()}`;
+  const confirmadoEm = confirmado_em ? new Date(confirmado_em) : new Date();
+
+  try {
+    const inserted = await db.query(
+      `
+      INSERT INTO pagamentos (email, telefone, plano, valor, status, payment_id, cliente_usuario, cliente_senha, confirmado_em, criado_em, atualizado_em)
+      VALUES ($1, $2, $3, $4, 'confirmado', $5, $6, $7, $8, NOW(), NOW())
+      RETURNING *
+      `,
+      [
+        emailNorm,
+        telNorm,
+        planoNorm,
+        valorNum,
+        paymentId,
+        cliente_usuario ? String(cliente_usuario).trim() : null,
+        cliente_senha ? String(cliente_senha).trim() : null,
+        confirmadoEm
+      ]
+    );
+
+    return res.json({ ok: true, pagamento: enriquecerPagamento(inserted.rows[0]) });
+  } catch (error) {
+    console.error("Erro ao confirmar pagamento em dinheiro:", error);
+    return res.status(500).json({ error: "Erro ao confirmar pagamento em dinheiro." });
   }
 });
 
