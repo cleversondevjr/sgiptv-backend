@@ -1275,6 +1275,25 @@ db.query(`
   .then(() => console.log("Tabela comissoes OK"))
   .catch(err => console.error("Erro ao garantir tabela comissoes:", err));
 
+// Bases novas/limpas podem nao ter a tabela testes_iptv ainda.
+db.query(`
+  CREATE TABLE IF NOT EXISTS testes_iptv (
+    id BIGSERIAL PRIMARY KEY,
+    email TEXT NOT NULL,
+    telefone TEXT NOT NULL,
+    resposta TEXT NOT NULL,
+    login TEXT,
+    senha TEXT,
+    criado_em TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  )
+`)
+  .then(() => console.log("Tabela testes_iptv OK"))
+  .catch(err => console.error("Erro ao garantir tabela testes_iptv:", err));
+
+db.query(`CREATE INDEX IF NOT EXISTS testes_iptv_email_telefone_idx ON testes_iptv (email, telefone)`)
+  .then(() => console.log("Indice testes_iptv_email_telefone_idx OK"))
+  .catch(err => console.error("Erro ao garantir indice testes_iptv_email_telefone_idx:", err));
+
 db.query(`ALTER TABLE testes_iptv ADD COLUMN IF NOT EXISTS login TEXT`)
   .then(() => console.log("Coluna testes_iptv.login OK"))
   .catch(err => console.error("Erro ao garantir coluna testes_iptv.login:", err));
