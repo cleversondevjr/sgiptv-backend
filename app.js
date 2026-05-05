@@ -1188,6 +1188,11 @@ db.query(`ALTER TABLE pagamentos ADD COLUMN IF NOT EXISTS cliente_senha TEXT`)
   .then(() => console.log("Coluna pagamentos.cliente_senha OK"))
   .catch(err => console.error("Erro ao garantir coluna pagamentos.cliente_senha:", err));
 
+// Bases restauradas/legadas podem nao ter a coluna telefone (WhatsApp) na tabela pagamentos.
+db.query(`ALTER TABLE pagamentos ADD COLUMN IF NOT EXISTS telefone TEXT`)
+  .then(() => console.log("Coluna pagamentos.telefone OK"))
+  .catch(err => console.error("Erro ao garantir coluna pagamentos.telefone:", err));
+
 db.query(`
   CREATE TABLE IF NOT EXISTS clientes (
     id BIGSERIAL PRIMARY KEY,
