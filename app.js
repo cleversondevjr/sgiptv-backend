@@ -650,7 +650,7 @@ async function enviarTelegramAvisoAdmin(texto, tipo = "default") {
   }
 }
 
-async function notificarVendaAdmin({ tipo, pagamento, origem }) {
+async function notificarVendaAdmin({ tipo, pagamento, origem, telegramTipo = "default" }) {
   const p = enriquecerPagamento(pagamento);
 
   const credenciais = {
@@ -675,7 +675,8 @@ async function notificarVendaAdmin({ tipo, pagamento, origem }) {
 
   const texto = linhas.join("\n");
 
-  await enviarTelegramAvisoAdmin(texto, "pix");
+  // Envia para o chat especifico do assunto (pix/cliente/revendedor/vencimento_1d etc).
+  await enviarTelegramAvisoAdmin(texto, telegramTipo);
 
   await enviarEmailAvisoAdmin({
     assunto: `${tipo} - SG IPTV`,
@@ -700,7 +701,6 @@ async function notificarVendaAdmin({ tipo, pagamento, origem }) {
   });
 
   await enviarWhatsappAvisoAdmin(texto);
-  await enviarTelegramAvisoAdmin(texto);
 }
 
 function phoneToBr(phoneDigits) {
@@ -843,7 +843,7 @@ async function confirmarPagamentoRecebido(pagamento, origem = "webhook") {
   const confirmado = result.rows[0] || pagamento;
 
   if (!confirmado.notificado_em) {
-    await notificarVendaAdmin({ tipo: "Pix recebido", pagamento: confirmado, origem });
+    await notificarVendaAdmin({ tipo: "Pix recebido", pagamento: confirmado, origem, telegramTipo: "pix" });
     try {
       await db.query("UPDATE pagamentos SET notificado_em = NOW() WHERE payment_id = $1", [String(confirmado.payment_id)]);
     } catch (error) {
@@ -1396,7 +1396,8 @@ app.post("/pix", limitePublico, async (req, res) => {
     await notificarVendaAdmin({
       tipo: "Novo Pix gerado",
       pagamento: { email, telefone, plano, valor, payment_id: paymentId },
-      origem: "pix"
+      origem: "pix",
+      telegramTipo: "pix"
     });
 
     res.json({
@@ -2237,6 +2238,31 @@ app.post("/admin/telegram/teste", verificarToken, async (req, res) => {
   } catch (error) {
     console.error("Erro ao testar Telegram:", error);
     return res.status(500).json({ error: "Erro ao testar Telegram." });
+  }
+});
+
+app.post("/admin/email/teste", verificarToken, async (req, res) => {
+  try {
+    const { assunto, texto } = req.body || {};
+    const subj = String(assunto || "Teste Email - SG IPTV").trim();
+    const body = String(texto || "Teste de envio de email do backend SG IPTV.").trim();
+
+    const ok = await enviarEmailAvisoAdmin({
+      assunto: subj,
+      text: body,
+      html: `<pre style="font-family:Arial, sans-serif; white-space:pre-wrap;">${escaparHtml(body)}</pre>`
+    });
+
+    if (!ok) {
+      return res.status(400).json({
+        error: "Email nao enviado. Verifique BREVO_API_KEY+EMAIL_FROM, ou SMTP_HOST/SMTP_USER/SMTP_PASS, ou EMAIL_USER/EMAIL_PASS."
+      });
+    }
+
+    return res.json({ ok: true });
+  } catch (error) {
+    console.error("Erro ao testar email:", error);
+    return res.status(500).json({ error: "Erro ao testar email." });
   }
 });
 
