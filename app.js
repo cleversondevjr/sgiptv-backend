@@ -1662,7 +1662,16 @@ app.get("/clientes", verificarToken, async (req, res) => {
 
 app.put("/clientes/:id", verificarToken, async (req, res) => {
   const { id } = req.params;
-  const { nome, email, telefone } = req.body || {};
+  const { nome, email, telefone, conexoes } = req.body || {};
+
+  let conexoesNumero = null;
+  if (conexoes !== undefined && conexoes !== null && String(conexoes).trim() !== "") {
+    const parsed = Number.parseInt(String(conexoes), 10);
+    if (Number.isNaN(parsed) || parsed < 1 || parsed > 20) {
+      return res.status(400).json({ error: "Conexoes invalido. Use um numero entre 1 e 20." });
+    }
+    conexoesNumero = parsed;
+  }
 
   try {
     const result = await db.query(
@@ -1671,14 +1680,16 @@ app.put("/clientes/:id", verificarToken, async (req, res) => {
       SET nome = $1,
           email = $2,
           telefone = $3,
+          conexoes = COALESCE($4, conexoes),
           atualizado_em = NOW()
-      WHERE id = $4
+      WHERE id = $5
       RETURNING *
       `,
       [
         nome ? String(nome).trim() : null,
         email ? String(email).trim().toLowerCase() : null,
         telefone ? String(telefone).replace(/\\D/g, "") : null,
+        conexoesNumero,
         id
       ]
     );
