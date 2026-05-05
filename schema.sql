@@ -1,7 +1,9 @@
 CREATE TABLE IF NOT EXISTS pagamentos (
   id BIGSERIAL PRIMARY KEY,
-  email TEXT NOT NULL,
-  telefone TEXT NOT NULL,
+  -- Para Pix normal, email/telefone sao obrigatorios pelo backend.
+  -- Para confirmacao manual (dinheiro), permitimos nulos.
+  email TEXT,
+  telefone TEXT,
   plano TEXT NOT NULL,
   valor NUMERIC(10, 2) NOT NULL,
   status TEXT NOT NULL DEFAULT 'pendente',

@@ -1137,6 +1137,30 @@ db.query("SELECT NOW()")
   .then(res => console.log("Banco conectado:", res.rows))
   .catch(err => console.error("Erro no banco:", err));
 
+// Garante tabela pagamentos antes de qualquer ALTER TABLE (bases novas ou legadas podem nao ter).
+db.query(`
+  CREATE TABLE IF NOT EXISTS pagamentos (
+    id BIGSERIAL PRIMARY KEY,
+    email TEXT,
+    telefone TEXT,
+    plano TEXT NOT NULL,
+    valor NUMERIC(10, 2) NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pendente',
+    payment_id TEXT UNIQUE NOT NULL,
+    cliente_usuario TEXT,
+    cliente_senha TEXT,
+    confirmado_em TIMESTAMPTZ,
+    notificado_em TIMESTAMPTZ,
+    cancelado_em TIMESTAMPTZ,
+    aviso_24h_enviado_em TIMESTAMPTZ,
+    criado_em TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    atualizado_em TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT pagamentos_status_check CHECK (status IN ('pendente', 'confirmado', 'cancelado'))
+  )
+`)
+  .then(() => console.log("Tabela pagamentos OK"))
+  .catch(err => console.error("Erro ao garantir tabela pagamentos:", err));
+
 async function limparRevendedoresSemClientesAtivos() {
   try {
     await db.query(
@@ -1192,6 +1216,14 @@ db.query(`ALTER TABLE pagamentos ADD COLUMN IF NOT EXISTS cliente_senha TEXT`)
 db.query(`ALTER TABLE pagamentos ADD COLUMN IF NOT EXISTS telefone TEXT`)
   .then(() => console.log("Coluna pagamentos.telefone OK"))
   .catch(err => console.error("Erro ao garantir coluna pagamentos.telefone:", err));
+
+// Permite confirmacao manual sem exigir email/telefone no DB (Pix normal segue validando no backend).
+db.query(`ALTER TABLE pagamentos ALTER COLUMN email DROP NOT NULL`)
+  .then(() => console.log("Pagamentos.email nullable OK"))
+  .catch(() => null);
+db.query(`ALTER TABLE pagamentos ALTER COLUMN telefone DROP NOT NULL`)
+  .then(() => console.log("Pagamentos.telefone nullable OK"))
+  .catch(() => null);
 
 db.query(`
   CREATE TABLE IF NOT EXISTS clientes (
