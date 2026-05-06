@@ -551,8 +551,15 @@ async function enviarEmailAvisoAdmin({ assunto, html, text }) {
       return false;
     }
 
-    const fromEmail = String(process.env.EMAIL_FROM || process.env.SMTP_USER || process.env.EMAIL_USER || "").trim();
-    const fromName = String(process.env.EMAIL_FROM_NAME || "SG IPTV").trim();
+    // EMAIL_FROM pode vir como: "Nome <email@dominio>" ou apenas "email@dominio".
+    // Evita montar strings invalidas do tipo: "\"Nome\" <Nome <email>>" (isso quebra a Brevo).
+    const baseFrom = String(process.env.EMAIL_FROM || "").trim();
+    const fromEmail =
+      extrairEmailFrom(baseFrom) ||
+      String(process.env.SMTP_USER || process.env.EMAIL_USER || "").trim();
+    const fromName =
+      extrairNomeFrom(baseFrom) ||
+      String(process.env.EMAIL_FROM_NAME || "SG IPTV").trim();
     const from = fromEmail ? `"${fromName}" <${fromEmail}>` : undefined;
 
     await transporter.sendMail({
