@@ -884,7 +884,7 @@ async function cancelarPagamentosPixExpirados() {
       SET status = $1,
           cancelado_em = NOW()
       WHERE status = $2
-      AND criado_em <= NOW() - ($3 || ' minutes')::interval
+      AND criado_em <= NOW() - (($3::text) || ' minutes')::interval
       `,
       ["cancelado", "pendente", PIX_EXPIRACAO_MINUTOS]
     );
@@ -896,7 +896,7 @@ async function cancelarPagamentosPixExpirados() {
       UPDATE pagamentos
       SET status = $1
       WHERE status = $2
-      AND criado_em <= NOW() - ($3 || ' minutes')::interval
+      AND criado_em <= NOW() - (($3::text) || ' minutes')::interval
       `,
       ["cancelado", "pendente", PIX_EXPIRACAO_MINUTOS]
     );
@@ -909,7 +909,7 @@ async function limparPagamentosCanceladosAntigos() {
       `
       DELETE FROM pagamentos
       WHERE status = $1
-      AND COALESCE(cancelado_em, criado_em) <= NOW() - ($2 || ' minutes')::interval
+      AND COALESCE(cancelado_em, criado_em) <= NOW() - (($2::text) || ' minutes')::interval
       `,
       ["cancelado", PIX_EXPIRACAO_MINUTOS]
     );
@@ -920,7 +920,7 @@ async function limparPagamentosCanceladosAntigos() {
       `
       DELETE FROM pagamentos
       WHERE status = $1
-      AND criado_em <= NOW() - ($2 || ' minutes')::interval
+      AND criado_em <= NOW() - (($2::text) || ' minutes')::interval
       `,
       ["cancelado", PIX_EXPIRACAO_MINUTOS]
     );
@@ -1624,9 +1624,9 @@ app.get("/pagamentos/mes", verificarToken, async (req, res) => {
       SELECT *
       FROM pagamentos
       WHERE status = $1
-      AND criado_em >= $2
-      AND criado_em < $3
-      ORDER BY criado_em DESC, id DESC
+      AND COALESCE(confirmado_em, criado_em) >= $2
+      AND COALESCE(confirmado_em, criado_em) < $3
+      ORDER BY COALESCE(confirmado_em, criado_em) DESC, id DESC
       `,
       ["confirmado", inicio.toISOString(), fim.toISOString()]
     );
