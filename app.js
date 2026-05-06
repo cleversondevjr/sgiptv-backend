@@ -891,15 +891,19 @@ async function cancelarPagamentosPixExpirados() {
   } catch (error) {
     // Se a coluna ainda nao existir (migracao async), faz fallback sem cancelado_em.
     console.error("Erro ao cancelar Pix expirados (com cancelado_em). Tentando fallback:", error);
-    await db.query(
-      `
-      UPDATE pagamentos
-      SET status = $1
-      WHERE status = $2
-      AND criado_em <= NOW() - (($3::text) || ' minutes')::interval
-      `,
-      ["cancelado", "pendente", PIX_EXPIRACAO_MINUTOS]
-    );
+    try {
+      await db.query(
+        `
+        UPDATE pagamentos
+        SET status = $1
+        WHERE status = $2
+        AND criado_em <= NOW() - (($3::text) || ' minutes')::interval
+        `,
+        ["cancelado", "pendente", PIX_EXPIRACAO_MINUTOS]
+      );
+    } catch (fallbackError) {
+      console.error("Erro ao cancelar Pix expirados (fallback). Continuando:", fallbackError);
+    }
   }
 }
 
@@ -916,14 +920,18 @@ async function limparPagamentosCanceladosAntigos() {
   } catch (error) {
     // Fallback quando cancelado_em ainda nao existe.
     console.error("Erro ao limpar cancelados (com cancelado_em). Tentando fallback:", error);
-    await db.query(
-      `
-      DELETE FROM pagamentos
-      WHERE status = $1
-      AND criado_em <= NOW() - (($2::text) || ' minutes')::interval
-      `,
-      ["cancelado", PIX_EXPIRACAO_MINUTOS]
-    );
+    try {
+      await db.query(
+        `
+        DELETE FROM pagamentos
+        WHERE status = $1
+        AND criado_em <= NOW() - (($2::text) || ' minutes')::interval
+        `,
+        ["cancelado", PIX_EXPIRACAO_MINUTOS]
+      );
+    } catch (fallbackError) {
+      console.error("Erro ao limpar cancelados (fallback). Continuando:", fallbackError);
+    }
   }
 }
 
@@ -1529,7 +1537,10 @@ Painel Admin: ${ADMIN_PANEL_URL}
     res.json(lista);
   } catch (error) {
     console.error("Erro ao buscar pagamentos:", error);
-    res.status(500).json({ error: "Erro ao buscar pagamentos" });
+    res.status(500).json({
+      error: "Erro ao buscar pagamentos",
+      detail: String(error?.message || error)
+    });
   }
 });
 
@@ -1644,7 +1655,10 @@ app.get("/pagamentos/mes", verificarToken, async (req, res) => {
     });
   } catch (error) {
     console.error("Erro ao buscar pagamentos do mes:", error);
-    res.status(500).json({ error: "Erro ao buscar pagamentos do mes" });
+    res.status(500).json({
+      error: "Erro ao buscar pagamentos do mes",
+      detail: String(error?.message || error)
+    });
   }
 });
 
@@ -1994,7 +2008,10 @@ app.post("/pagamentos/dinheiro", verificarToken, async (req, res) => {
     return res.json({ ok: true, pagamento: enriquecerPagamento(inserted.rows[0]) });
   } catch (error) {
     console.error("Erro ao confirmar pagamento em dinheiro:", error);
-    return res.status(500).json({ error: "Erro ao confirmar pagamento em dinheiro." });
+    return res.status(500).json({
+      error: "Erro ao confirmar pagamento em dinheiro.",
+      detail: String(error?.message || error)
+    });
   }
 });
 
