@@ -127,6 +127,16 @@ const PLANO_LEGADO_POR_VALOR = {
   "140": "trimestral_2_telas"
 };
 
+async function limparTestesIptvAntigos() {
+  // Mantemos o registro do teste por 24h para auditoria, depois limpa.
+  // Nao apaga o cliente (tabela clientes), apenas a tabela de testes.
+  try {
+    await db.query(`DELETE FROM testes_iptv WHERE criado_em <= NOW() - interval '24 hours'`);
+  } catch (error) {
+    console.error("Erro ao limpar testes IPTV antigos:", error);
+  }
+}
+
 const TESTE_URLS = {
   iptv_com_adulto: "https://prpainel.online/api/chatbot/ywDm7Eb1pR/BV4D3rLaqZ",
   iptv_sem_adulto: "https://prpainel.online/api/chatbot/ywDm7Eb1pR/8241Kg1mxd",
@@ -1199,6 +1209,10 @@ async function limparRevendedoresSemClientesAtivos() {
 setInterval(limparRevendedoresSemClientesAtivos, 12 * 60 * 60 * 1000);
 limparRevendedoresSemClientesAtivos();
 
+// Limpa a tabela de testes a cada hora (mantem apenas 24h de historico).
+setInterval(limparTestesIptvAntigos, 60 * 60 * 1000);
+limparTestesIptvAntigos();
+
 db.query(`ALTER TABLE pagamentos ADD COLUMN IF NOT EXISTS aviso_24h_enviado_em TIMESTAMPTZ`)
   .then(() => console.log("Coluna aviso_24h_enviado_em OK"))
   .catch(err => console.error("Erro ao garantir coluna aviso_24h_enviado_em:", err));
@@ -1214,6 +1228,18 @@ db.query(`ALTER TABLE pagamentos ADD COLUMN IF NOT EXISTS confirmado_em TIMESTAM
 db.query(`ALTER TABLE pagamentos ADD COLUMN IF NOT EXISTS notificado_em TIMESTAMPTZ`)
   .then(() => console.log("Coluna pagamentos.notificado_em OK"))
   .catch(err => console.error("Erro ao garantir coluna pagamentos.notificado_em:", err));
+
+db.query(`ALTER TABLE pagamentos ADD COLUMN IF NOT EXISTS origem TEXT`)
+  .then(() => console.log("Coluna pagamentos.origem OK"))
+  .catch(err => console.error("Erro ao garantir coluna pagamentos.origem:", err));
+
+db.query(`ALTER TABLE pagamentos ALTER COLUMN origem SET DEFAULT 'pix'`)
+  .then(() => {})
+  .catch(() => {});
+
+db.query(`UPDATE pagamentos SET origem = 'pix' WHERE origem IS NULL`)
+  .then(() => {})
+  .catch(() => {});
 
 // Bases legadas (ex: import/restores) podem nao ter criado_em/atualizado_em.
 // Sem isso, rotas de listagem/relatorio e limpeza por tempo estouram 500.
@@ -1419,10 +1445,10 @@ app.post("/pix", limitePublico, async (req, res) => {
 
     await db.query(
       `
-      INSERT INTO pagamentos (email, telefone, plano, valor, status, payment_id, cliente_usuario, cliente_senha)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      INSERT INTO pagamentos (email, telefone, plano, valor, status, payment_id, cliente_usuario, cliente_senha, origem)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
       `,
-      [email, telefone, plano, valor, "pendente", paymentId, clienteUsuario, clienteSenha]
+      [email, telefone, plano, valor, "pendente", paymentId, clienteUsuario, clienteSenha, "pix"]
     );
 
     const data = result.point_of_interaction.transaction_data;
@@ -1979,6 +2005,76 @@ app.put("/pagamentos/:id/confirmar", verificarToken, async (req, res) => {
   }
 });
 
+// Atualiza campos auxiliares do pagamento (para testes/auditoria no painel).
+app.put("/pagamentos/:id/detalhes", verificarToken, async (req, res) => {
+  const { id } = req.params;
+  const cliente_usuario = req.body?.cliente_usuario ? String(req.body.cliente_usuario).trim() : null;
+  const cliente_senha = req.body?.cliente_senha ? String(req.body.cliente_senha).trim() : null;
+  const origem = req.body?.origem ? String(req.body.origem).trim().toLowerCase() : null;
+
+  const origemFinal = origem === "pix" || origem === "dinheiro" ? origem : null;
+
+  try {
+    const result = await db.query(
+      `
+      UPDATE pagamentos
+      SET cliente_usuario = COALESCE($2, cliente_usuario),
+          cliente_senha = COALESCE($3, cliente_senha),
+          origem = COALESCE($4, origem),
+          atualizado_em = NOW()
+      WHERE id = $1
+      RETURNING *
+      `,
+      [id, cliente_usuario, cliente_senha, origemFinal]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: "Pagamento nao encontrado." });
+    }
+
+    return res.json({ ok: true, pagamento: enriquecerPagamento(result.rows[0]) });
+  } catch (error) {
+    console.error("Erro ao atualizar detalhes do pagamento:", error);
+    return res.status(500).json({ error: "Erro ao atualizar detalhes do pagamento.", detail: String(error?.message || error) });
+  }
+});
+
+// Excluir pagamento (apenas para limpar testes/pendentes/cancelados no painel).
+app.delete("/pagamentos/:id", verificarToken, async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    const atual = await db.query(
+      `SELECT id, status, plano, payment_id FROM pagamentos WHERE id = $1 LIMIT 1`,
+      [id]
+    );
+
+    if (atual.rows.length === 0) {
+      return res.status(404).json({ error: "Pagamento nao encontrado." });
+    }
+
+    const p = atual.rows[0];
+    const plano = String(p.plano || "");
+    const paymentId = String(p.payment_id || "");
+    const status = String(p.status || "");
+
+    const podeExcluir =
+      status !== "confirmado" ||
+      paymentId.startsWith("DINHEIRO-") ||
+      plano.toUpperCase().includes("TESTE");
+
+    if (!podeExcluir) {
+      return res.status(400).json({ error: "Nao permitido excluir pagamento confirmado (use apenas para testes/pendentes)." });
+    }
+
+    await db.query(`DELETE FROM pagamentos WHERE id = $1`, [id]);
+    return res.json({ ok: true });
+  } catch (error) {
+    console.error("Erro ao excluir pagamento:", error);
+    return res.status(500).json({ error: "Erro ao excluir pagamento.", detail: String(error?.message || error) });
+  }
+});
+
 // Confirmacao manual (pagamento em dinheiro).
 app.post("/pagamentos/dinheiro", verificarToken, async (req, res) => {
   const {
@@ -2008,8 +2104,8 @@ app.post("/pagamentos/dinheiro", verificarToken, async (req, res) => {
   try {
     const inserted = await db.query(
       `
-      INSERT INTO pagamentos (email, telefone, plano, valor, status, payment_id, cliente_usuario, cliente_senha, confirmado_em, criado_em, atualizado_em)
-      VALUES ($1, $2, $3, $4, 'confirmado', $5, $6, $7, $8, NOW(), NOW())
+      INSERT INTO pagamentos (email, telefone, plano, valor, status, payment_id, cliente_usuario, cliente_senha, confirmado_em, criado_em, atualizado_em, origem)
+      VALUES ($1, $2, $3, $4, 'confirmado', $5, $6, $7, $8, NOW(), NOW(), 'dinheiro')
       RETURNING *
       `,
       [
