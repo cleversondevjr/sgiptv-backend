@@ -1215,6 +1215,25 @@ db.query(`ALTER TABLE pagamentos ADD COLUMN IF NOT EXISTS notificado_em TIMESTAM
   .then(() => console.log("Coluna pagamentos.notificado_em OK"))
   .catch(err => console.error("Erro ao garantir coluna pagamentos.notificado_em:", err));
 
+// Bases legadas (ex: import/restores) podem nao ter criado_em/atualizado_em.
+// Sem isso, rotas de listagem/relatorio e limpeza por tempo estouram 500.
+db.query(`ALTER TABLE pagamentos ADD COLUMN IF NOT EXISTS criado_em TIMESTAMPTZ NOT NULL DEFAULT NOW()`)
+  .then(() => console.log("Coluna pagamentos.criado_em OK"))
+  .catch(err => console.error("Erro ao garantir coluna pagamentos.criado_em:", err));
+
+db.query(`ALTER TABLE pagamentos ADD COLUMN IF NOT EXISTS atualizado_em TIMESTAMPTZ NOT NULL DEFAULT NOW()`)
+  .then(() => console.log("Coluna pagamentos.atualizado_em OK"))
+  .catch(err => console.error("Erro ao garantir coluna pagamentos.atualizado_em:", err));
+
+// Se a coluna existia mas tinha nulos, preenche para manter queries funcionando.
+db.query(`UPDATE pagamentos SET criado_em = NOW() WHERE criado_em IS NULL`)
+  .then(() => {})
+  .catch(() => {});
+
+db.query(`UPDATE pagamentos SET atualizado_em = NOW() WHERE atualizado_em IS NULL`)
+  .then(() => {})
+  .catch(() => {});
+
 db.query(`ALTER TABLE pagamentos ADD COLUMN IF NOT EXISTS atualizado_em TIMESTAMPTZ NOT NULL DEFAULT NOW()`)
   .then(() => console.log("Coluna pagamentos.atualizado_em OK"))
   .catch(err => console.error("Erro ao garantir coluna pagamentos.atualizado_em:", err));
