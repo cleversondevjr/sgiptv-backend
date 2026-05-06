@@ -1479,9 +1479,11 @@ app.get("/pagamentos", verificarToken, async (req, res) => {
       if (restanteMs <= 0) continue;
 
       if (restanteMs <= 24 * 60 * 60 * 1000) {
-        await enviarEmailAvisoAdmin({
-          assunto: "Plano com menos de 24h - SG IPTV",
-          text: `
+        // Nunca deixe a listagem de pagamentos falhar por causa de notificacao.
+        try {
+          await enviarEmailAvisoAdmin({
+            assunto: "Plano com menos de 24h - SG IPTV",
+            text: `
 Plano com menos de 24h
 
 Email: ${pagamento.email}
@@ -1493,7 +1495,7 @@ Payment ID: ${pagamento.payment_id}
 
 Painel Admin: ${ADMIN_PANEL_URL}
           `,
-          html: `
+            html: `
             <div style="font-family: Arial, sans-serif; background:#05000f; color:#ffffff; padding:25px;">
               <div style="max-width:720px; margin:auto; background:#0b0018; border:1px solid #facc15; border-radius:14px; padding:25px;">
                 <h2 style="color:#facc15;">Plano com menos de 24h</h2>
@@ -1507,7 +1509,10 @@ Painel Admin: ${ADMIN_PANEL_URL}
               </div>
             </div>
           `
-        });
+          });
+        } catch (e) {
+          console.error("Falha ao enviar email 24h (continuando):", e);
+        }
 
         await db.query(
           `
