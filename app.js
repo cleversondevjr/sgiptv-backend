@@ -1958,8 +1958,10 @@ app.post("/pagamentos/dinheiro", verificarToken, async (req, res) => {
   const planoNorm = String(plano || "").trim();
   const valorNum = Number(valor);
 
-  if (!emailNorm || !telNorm || !planoNorm || !Number.isFinite(valorNum) || valorNum <= 0) {
-    return res.status(400).json({ error: "Informe email, WhatsApp, plano e valor." });
+  // Pagamento em dinheiro: obrigatorio apenas plano + valor.
+  // Email/WhatsApp sao opcionais (podem vir vazios) e servem apenas para registro/relatorio.
+  if (!planoNorm || !Number.isFinite(valorNum) || valorNum <= 0) {
+    return res.status(400).json({ error: "Informe plano e valor." });
   }
 
   const paymentId = `DINHEIRO-${Date.now()}`;
@@ -1973,8 +1975,8 @@ app.post("/pagamentos/dinheiro", verificarToken, async (req, res) => {
       RETURNING *
       `,
       [
-        emailNorm,
-        telNorm,
+        emailNorm || null,
+        telNorm || null,
         planoNorm,
         valorNum,
         paymentId,
