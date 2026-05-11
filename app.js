@@ -622,6 +622,7 @@ function obterChatIdTelegram(tipo) {
     (tipo === "cliente" && process.env.TELEGRAM_CHAT_ID_CLIENTE) ||
     (tipo === "revendedor" && process.env.TELEGRAM_CHAT_ID_REVENDEDOR) ||
     (tipo === "vencimento_1d" && process.env.TELEGRAM_CHAT_ID_VENCIMENTO_1D) ||
+    (tipo === "vencimento_3d" && process.env.TELEGRAM_CHAT_ID_VENCIMENTO_3D) ||
     ""
   ).trim();
 
@@ -2368,6 +2369,24 @@ app.post("/admin/teste-emails-vencimento", verificarToken, async (req, res) => {
     } catch (mailError) {
       return res.status(400).json({ error: String(mailError?.message || mailError || "Falha ao enviar email.") });
     }
+
+    // Tambem envia Telegram para validar o canal de vencimentos.
+    // Se TELEGRAM_CHAT_ID_VENCIMENTO_3D nao existir, cai no chat base.
+    const baseTexto = (dias) => `
+Vencimento em ${dias} dia${dias === 1 ? "" : "s"} (TESTE) - SG IPTV
+
+Cliente: ${cliente.nome || "-"}
+Usuario: ${cliente.usuario}
+Plano: ${cliente.plano}
+Vencimento: ${formatarDataPtBr(cliente.vencimento)}
+Email: ${cliente.email || "-"}
+WhatsApp: ${cliente.telefone || "-"}
+
+Painel Admin: ${ADMIN_PANEL_URL}
+    `.trim();
+
+    await enviarTelegramAvisoAdmin(baseTexto(3), "vencimento_3d");
+    await enviarTelegramAvisoAdmin(baseTexto(1), "vencimento_1d");
 
     return res.json({ ok: true });
   } catch (error) {
