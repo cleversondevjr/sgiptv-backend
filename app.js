@@ -1964,7 +1964,23 @@ app.put("/revendedores/:id/aprovar", verificarToken, async (req, res) => {
     );
 
     if (result.rows.length === 0) return res.status(404).json({ error: "Revendedor nao encontrado." });
-    return res.json({ ok: true, revendedor: result.rows[0] });
+    const rev = result.rows[0];
+
+    // Confirma no Telegram do revendedor que foi aprovado.
+    await enviarTelegramAvisoAdmin(
+      [
+        "SG IPTV - Revendedor aprovado",
+        "",
+        `Email: ${rev.email}`,
+        `Codigo: ${rev.codigo}`,
+        "Status: aprovado",
+        "",
+        `Painel Admin: ${ADMIN_PANEL_URL}`
+      ].join("\n"),
+      "revendedor"
+    );
+
+    return res.json({ ok: true, revendedor: rev });
   } catch (error) {
     console.error("Erro ao aprovar revendedor:", error);
     return res.status(500).json({ error: "Erro ao aprovar revendedor." });
@@ -1990,7 +2006,23 @@ app.put("/revendedores/:id/reprovar", verificarToken, async (req, res) => {
     );
 
     if (result.rows.length === 0) return res.status(404).json({ error: "Revendedor nao encontrado." });
-    return res.json({ ok: true, revendedor: result.rows[0] });
+    const rev = result.rows[0];
+
+    // Confirma no Telegram do revendedor que foi reprovado.
+    await enviarTelegramAvisoAdmin(
+      [
+        "SG IPTV - Revendedor reprovado",
+        "",
+        `Email: ${rev.email}`,
+        `Codigo: ${rev.codigo}`,
+        "Status: reprovado",
+        "",
+        `Painel Admin: ${ADMIN_PANEL_URL}`
+      ].join("\n"),
+      "revendedor"
+    );
+
+    return res.json({ ok: true, revendedor: rev });
   } catch (error) {
     console.error("Erro ao reprovar revendedor:", error);
     return res.status(500).json({ error: "Erro ao reprovar revendedor." });
