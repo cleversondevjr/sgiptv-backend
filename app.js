@@ -2115,6 +2115,79 @@ app.delete("/pagamentos/:id", verificarToken, async (req, res) => {
   }
 });
 
+// Excluir teste IPTV (apenas limpeza de testes no painel).
+app.delete("/testes-iptv/:id", verificarToken, async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    const atual = await db.query(`SELECT id FROM testes_iptv WHERE id = $1 LIMIT 1`, [id]);
+    if (atual.rows.length === 0) return res.status(404).json({ error: "Teste nao encontrado." });
+
+    await db.query(`DELETE FROM testes_iptv WHERE id = $1`, [id]);
+    return res.json({ ok: true });
+  } catch (error) {
+    console.error("Erro ao excluir teste IPTV:", error);
+    return res.status(500).json({ error: "Erro ao excluir teste IPTV.", detail: String(error?.message || error) });
+  }
+});
+
+// Excluir cliente (apenas limpeza de cadastros de teste/errados no painel).
+app.delete("/clientes/:id", verificarToken, async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    const atual = await db.query(
+      `SELECT id, usuario, plano FROM clientes WHERE id = $1 LIMIT 1`,
+      [id]
+    );
+    if (atual.rows.length === 0) return res.status(404).json({ error: "Cliente nao encontrado." });
+
+    // Evita excluir cliente "real" sem querer: permite excluir apenas se plano conter TESTE
+    // ou se o usuario estiver claramente marcado como teste.
+    const c = atual.rows[0];
+    const plano = String(c.plano || "").toUpperCase();
+    const usuario = String(c.usuario || "");
+    const podeExcluir = plano.includes("TESTE") || usuario.toLowerCase().startsWith("teste");
+
+    if (!podeExcluir) {
+      return res.status(400).json({ error: "Nao permitido excluir cliente (use apenas para testes)." });
+    }
+
+    await db.query(`DELETE FROM clientes WHERE id = $1`, [id]);
+    return res.json({ ok: true });
+  } catch (error) {
+    console.error("Erro ao excluir cliente:", error);
+    return res.status(500).json({ error: "Erro ao excluir cliente.", detail: String(error?.message || error) });
+  }
+});
+
+// Excluir revendedor (apenas limpeza de testes). So permite se nao houver clientes vinculados.
+app.delete("/revendedores/:id", verificarToken, async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    const atual = await db.query(
+      `SELECT id, codigo, email, status FROM revendedores WHERE id = $1 LIMIT 1`,
+      [id]
+    );
+    if (atual.rows.length === 0) return res.status(404).json({ error: "Revendedor nao encontrado." });
+
+    const vinc = await db.query(
+      `SELECT 1 FROM clientes WHERE revendedor_id = $1 LIMIT 1`,
+      [id]
+    );
+    if (vinc.rows.length > 0) {
+      return res.status(400).json({ error: "Nao permitido excluir: existem clientes vinculados a este revendedor." });
+    }
+
+    await db.query(`DELETE FROM revendedores WHERE id = $1`, [id]);
+    return res.json({ ok: true });
+  } catch (error) {
+    console.error("Erro ao excluir revendedor:", error);
+    return res.status(500).json({ error: "Erro ao excluir revendedor.", detail: String(error?.message || error) });
+  }
+});
+
 // Confirmacao manual (pagamento em dinheiro).
 app.post("/pagamentos/dinheiro", verificarToken, async (req, res) => {
   const {
