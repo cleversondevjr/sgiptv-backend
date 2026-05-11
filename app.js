@@ -811,8 +811,15 @@ WhatsApp: ${cliente.telefone || "-"}
 Painel Admin: ${ADMIN_PANEL_URL}
   `.trim();
 
-  const fromEmail = String(process.env.EMAIL_FROM || process.env.SMTP_USER || process.env.EMAIL_USER || "").trim();
-  const fromName = String(process.env.EMAIL_FROM_NAME || "SG IPTV").trim();
+  // EMAIL_FROM pode ser "Nome <email@dominio>" ou apenas "email@dominio".
+  // Precisamos extrair o email real; caso contrario a Brevo rejeita com "valid sender email required".
+  const baseFrom = String(process.env.EMAIL_FROM || "").trim();
+  const fromEmail =
+    extrairEmailFrom(baseFrom) ||
+    String(process.env.SMTP_USER || process.env.EMAIL_USER || "").trim();
+  const fromName =
+    extrairNomeFrom(baseFrom) ||
+    String(process.env.EMAIL_FROM_NAME || "SG IPTV").trim();
   const from = fromEmail ? `"${fromName}" <${fromEmail}>` : undefined;
 
   await transporter.sendMail({
