@@ -1433,10 +1433,24 @@ app.get("/revendedor/comissoes", verificarTokenRevendedor, async (req, res) => {
   try {
     const result = await db.query(
       `
-      SELECT id, tipo, valor, status, transacao_id, criado_em, pago_em
-      FROM comissoes
-      WHERE revendedor_id = $1
-      ORDER BY id DESC
+      SELECT
+        c.id,
+        c.tipo,
+        c.valor,
+        c.status,
+        c.transacao_id,
+        c.criado_em,
+        c.pago_em,
+        c.pagamento_id,
+        c.cliente_id,
+        cl.usuario AS cliente_usuario,
+        cl.nome AS cliente_nome,
+        cl.email AS cliente_email,
+        cl.telefone AS cliente_telefone
+      FROM comissoes c
+      JOIN clientes cl ON cl.id = c.cliente_id
+      WHERE c.revendedor_id = $1
+      ORDER BY c.id DESC
       LIMIT 200
       `,
       [rid]
@@ -2307,10 +2321,16 @@ app.get("/revendedores/:id/comissoes", verificarToken, async (req, res) => {
   try {
     const result = await db.query(
       `
-      SELECT *
-      FROM comissoes
-      WHERE revendedor_id = $1
-      ORDER BY id DESC
+      SELECT
+        c.*,
+        cl.usuario AS cliente_usuario,
+        cl.nome AS cliente_nome,
+        cl.email AS cliente_email,
+        cl.telefone AS cliente_telefone
+      FROM comissoes c
+      JOIN clientes cl ON cl.id = c.cliente_id
+      WHERE c.revendedor_id = $1
+      ORDER BY c.id DESC
       LIMIT 200
       `,
       [id]
