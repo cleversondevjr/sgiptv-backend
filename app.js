@@ -877,6 +877,7 @@ async function confirmarPagamentoRecebido(pagamento, origem = "webhook") {
       email: confirmado.email,
       telefone: confirmado.telefone
     });
+    await garantirComissaoDoPagamentoConfirmado(confirmado);
   } catch (e) {
     console.error("Erro ao aplicar renovacao no cliente (continuando):", e);
   }
@@ -912,6 +913,91 @@ function conexoesDoPlano(planoTexto) {
   const plano = String(planoTexto || "").toLowerCase();
   if (plano.includes("2 tela") || plano.includes("2 telas")) return 2;
   return 1;
+}
+
+function calcularValorComissao({ plano = "", dias = 0, conexoes = 1 } = {}) {
+  const p = String(plano || "").toLowerCase();
+  const d = Number(dias) || 0;
+  const c = Number(conexoes) || 1;
+
+  // Regras atuais (painel):
+  // - Mensal 1 tela: R$ 10,00
+  // - Mensal 2 telas: R$ 15,00
+  // - 3 meses 1 tela: R$ 30,00
+  const ehTresMeses = p.includes("3 mes") || d >= 90;
+  const ehMensal = p.includes("mensal") || d === 30;
+
+  if (ehTresMeses) return 30;
+  if (ehMensal && c >= 2) return 15;
+  if (ehMensal) return 10;
+  return 0;
+}
+
+async function garantirComissaoDoPagamentoConfirmado(pagamento) {
+  // Cria comissao pendente para o revendedor vinculado ao cliente, sem duplicar.
+  if (!pagamento || pagamento.status !== "confirmado") return;
+  if (!pagamento.id) return; // precisamos do id para FK (pagamento_id)
+
+  const usuario = String(pagamento.cliente_usuario || "").trim();
+  const email = pagamento.email ? String(pagamento.email).trim().toLowerCase() : null;
+  const telefone = pagamento.telefone ? String(pagamento.telefone).replace(/\D/g, "") : null;
+  if (!usuario && !email && !telefone) return;
+
+  const clienteRes = await db.query(
+    `
+    SELECT id, revendedor_id
+    FROM clientes
+    WHERE ($1 <> '' AND usuario = $1)
+       OR ($2 IS NOT NULL AND email = $2)
+       OR ($3 IS NOT NULL AND telefone = $3)
+    ORDER BY atualizado_em DESC, id DESC
+    LIMIT 1
+    `,
+    [usuario, email, telefone]
+  );
+  if (clienteRes.rows.length === 0) return;
+
+  const cliente = clienteRes.rows[0];
+  const revendedorId = cliente.revendedor_id ? Number(cliente.revendedor_id) : 0;
+  if (!revendedorId) return;
+
+  const jaExiste = await db.query(`SELECT 1 FROM comissoes WHERE pagamento_id = $1 LIMIT 1`, [Number(pagamento.id)]);
+  if (jaExiste.rows.length > 0) return;
+
+  const dias = diasPlano(pagamento);
+  const conexoes = conexoesDoPlano(pagamento.plano);
+  const valor = calcularValorComissao({ plano: pagamento.plano, dias, conexoes });
+  if (!valor || valor <= 0) return;
+
+  let tipo = "renovacao";
+  try {
+    const prev = await db.query(
+      `
+      SELECT 1
+      FROM pagamentos p
+      WHERE p.status = 'confirmado'
+        AND p.id <> $1
+        AND (
+          ($2 <> '' AND p.cliente_usuario = $2)
+          OR ($3 IS NOT NULL AND p.email = $3)
+          OR ($4 IS NOT NULL AND p.telefone = $4)
+        )
+      LIMIT 1
+      `,
+      [Number(pagamento.id), usuario, email, telefone]
+    );
+    if (prev.rows.length === 0) tipo = "primeira_compra";
+  } catch {
+    tipo = "renovacao";
+  }
+
+  await db.query(
+    `
+    INSERT INTO comissoes (revendedor_id, cliente_id, pagamento_id, tipo, valor, status, criado_em, atualizado_em)
+    VALUES ($1, $2, $3, $4, $5, 'pendente', NOW(), NOW())
+    `,
+    [revendedorId, Number(cliente.id), Number(pagamento.id), tipo, Number(valor)]
+  );
 }
 
 async function aplicarRenovacaoCliente(pagamento) {
@@ -994,6 +1080,35 @@ async function limparTesteIptvDoCliente({ usuario = "", email = null, telefone =
     );
   } catch (e2) {
     console.warn("Aviso: falha ao limpar teste_iptv do cliente:", e2?.message || e2);
+  }
+}
+
+async function backfillComissoesRecentes() {
+  // Gera comissoes faltantes para pagamentos confirmados recentes
+  // (ex.: confirmados antes da feature de comissoes existir).
+  try {
+    const result = await db.query(
+      `
+      SELECT p.*
+      FROM pagamentos p
+      LEFT JOIN comissoes c ON c.pagamento_id = p.id
+      WHERE p.status = 'confirmado'
+        AND c.id IS NULL
+        AND p.confirmado_em >= NOW() - INTERVAL '60 days'
+      ORDER BY p.confirmado_em DESC, p.id DESC
+      LIMIT 200
+      `
+    );
+
+    for (const p of result.rows) {
+      try {
+        await garantirComissaoDoPagamentoConfirmado(p);
+      } catch (e) {
+        console.error("Erro ao backfill de comissao (continuando):", e?.message || e);
+      }
+    }
+  } catch (e) {
+    console.error("Erro ao rodar backfillComissoesRecentes:", e?.message || e);
   }
 }
 
@@ -1560,6 +1675,9 @@ if (PIX_SYNC_INTERVAL_MS > 0) {
   setTimeout(sincronizarPixPendentesBackground, 5_000).unref?.();
   console.log(`Sincronizador PIX pendente ativo: a cada ${PIX_SYNC_INTERVAL_MS}ms`);
 }
+
+// Garante comissoes para pagamentos confirmados recentes (feature nova).
+setTimeout(backfillComissoesRecentes, 10_000).unref?.();
 
 app.post("/pix", limitePublico, async (req, res) => {
   let { planoId, valor, email, telefone, cliente_usuario, cliente_senha } = req.body;
@@ -2466,6 +2584,7 @@ app.post("/pagamentos/dinheiro", verificarToken, async (req, res) => {
     // Renovacao do cliente (se houver login/email/telefone).
     try {
       await aplicarRenovacaoCliente(inserted.rows[0]);
+      await garantirComissaoDoPagamentoConfirmado(inserted.rows[0]);
     } catch (e) {
       console.error("Erro ao aplicar renovacao no cliente (dinheiro):", e);
     }
