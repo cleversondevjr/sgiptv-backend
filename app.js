@@ -952,18 +952,24 @@ async function garantirComissaoDoPagamentoConfirmado(pagamento) {
 
   // IMPORTANTE: quando $2/$3 vem null, o Postgres pode não conseguir inferir o tipo do parâmetro
   // em expressões como "email = $2". Por isso fazemos cast explícito para text.
-  const clienteRes = await db.query(
-    `
-    SELECT id, revendedor_id
-    FROM clientes
-    WHERE ($1 <> '' AND usuario = $1)
-       OR ($2 IS NOT NULL AND email = $2::text)
-       OR ($3 IS NOT NULL AND telefone = $3::text)
-    ORDER BY atualizado_em DESC, id DESC
-    LIMIT 1
-    `,
-    [usuario, email, telefone]
-  );
+  let clienteRes;
+  try {
+    clienteRes = await db.query(
+      `
+      SELECT id, revendedor_id
+      FROM clientes
+      WHERE ($1 <> '' AND usuario = $1::text)
+         OR ($2 IS NOT NULL AND email = $2::text)
+         OR ($3 IS NOT NULL AND telefone = $3::text)
+      ORDER BY atualizado_em DESC, id DESC
+      LIMIT 1
+      `,
+      [usuario, email, telefone]
+    );
+  } catch (e) {
+    console.error("Erro em comissao(cliente lookup):", e?.message || e, { usuario, email, telefone, pagamento_id: pagamento.id });
+    throw e;
+  }
   if (clienteRes.rows.length === 0) return;
 
   const cliente = clienteRes.rows[0];
@@ -982,7 +988,7 @@ async function garantirComissaoDoPagamentoConfirmado(pagamento) {
       WHERE p.status = 'confirmado'
         AND p.id <> $1
         AND (
-          ($2 <> '' AND p.cliente_usuario = $2)
+          ($2 <> '' AND p.cliente_usuario = $2::text)
           OR ($3 IS NOT NULL AND p.email = $3::text)
           OR ($4 IS NOT NULL AND p.telefone = $4::text)
         )
@@ -991,7 +997,8 @@ async function garantirComissaoDoPagamentoConfirmado(pagamento) {
       [Number(pagamento.id), usuario, email, telefone]
     );
     if (prev.rows.length === 0) tipo = "primeira_compra";
-  } catch {
+  } catch (e) {
+    console.error("Erro em comissao(prev check):", e?.message || e, { usuario, email, telefone, pagamento_id: pagamento.id });
     tipo = "renovacao";
   }
 
@@ -1003,13 +1010,18 @@ async function garantirComissaoDoPagamentoConfirmado(pagamento) {
       : calcularValorComissaoRenovacao({ valorPagamento: pagamento.valor });
   if (!valor || valor <= 0) return;
 
-  await db.query(
-    `
-    INSERT INTO comissoes (revendedor_id, cliente_id, pagamento_id, tipo, valor, status, criado_em, atualizado_em)
-    VALUES ($1, $2, $3, $4, $5, 'pendente', NOW(), NOW())
-    `,
-    [revendedorId, Number(cliente.id), Number(pagamento.id), tipo, Number(valor)]
-  );
+  try {
+    await db.query(
+      `
+      INSERT INTO comissoes (revendedor_id, cliente_id, pagamento_id, tipo, valor, status, criado_em, atualizado_em)
+      VALUES ($1, $2, $3, $4, $5, 'pendente', NOW(), NOW())
+      `,
+      [revendedorId, Number(cliente.id), Number(pagamento.id), tipo, Number(valor)]
+    );
+  } catch (e) {
+    console.error("Erro em comissao(insert):", e?.message || e, { revendedorId, clienteId: cliente.id, pagamento_id: pagamento.id, tipo, valor });
+    throw e;
+  }
 }
 
 async function aplicarRenovacaoCliente(pagamento) {
