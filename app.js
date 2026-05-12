@@ -2219,15 +2219,6 @@ app.delete("/pagamentos/:id", verificarToken, async (req, res) => {
     const paymentId = String(p.payment_id || "");
     const status = String(p.status || "");
 
-    const podeExcluir =
-      status !== "confirmado" ||
-      paymentId.startsWith("DINHEIRO-") ||
-      plano.toUpperCase().includes("TESTE");
-
-    if (!podeExcluir) {
-      return res.status(400).json({ error: "Nao permitido excluir pagamento confirmado (use apenas para testes/pendentes)." });
-    }
-
     await db.query(`DELETE FROM pagamentos WHERE id = $1`, [id]);
     return res.json({ ok: true });
   } catch (error) {
