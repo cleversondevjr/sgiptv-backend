@@ -872,6 +872,11 @@ async function confirmarPagamentoRecebido(pagamento, origem = "webhook") {
   // Atualiza vencimento do cliente (renovacao) quando tivermos algum identificador do cliente.
   try {
     await aplicarRenovacaoCliente(confirmado);
+    await limparTesteIptvDoCliente({
+      usuario: confirmado.cliente_usuario,
+      email: confirmado.email,
+      telefone: confirmado.telefone
+    });
   } catch (e) {
     console.error("Erro ao aplicar renovacao no cliente (continuando):", e);
   }
@@ -968,6 +973,28 @@ async function aplicarRenovacaoCliente(pagamento) {
       senha || null
     ]
   );
+}
+
+async function limparTesteIptvDoCliente({ usuario = "", email = null, telefone = null } = {}) {
+  const u = String(usuario || "").trim();
+  const e = email ? String(email).trim().toLowerCase() : null;
+  const t = telefone ? String(telefone).replace(/\D/g, "") : null;
+
+  if (!u && !e && !t) return;
+
+  try {
+    await db.query(
+      `
+      DELETE FROM testes_iptv
+      WHERE ($1 <> '' AND login = $1)
+         OR ($2 IS NOT NULL AND email = $2)
+         OR ($3 IS NOT NULL AND telefone = $3)
+      `,
+      [u, e, t]
+    );
+  } catch (e2) {
+    console.warn("Aviso: falha ao limpar teste_iptv do cliente:", e2?.message || e2);
+  }
 }
 
 let pixSyncEmAndamento = false;
@@ -1993,7 +2020,7 @@ app.get("/clientes", verificarToken, async (req, res) => {
 
 app.put("/clientes/:id", verificarToken, async (req, res) => {
   const { id } = req.params;
-  const { nome, email, telefone, conexoes, vencimento } = req.body || {};
+  const { nome, email, telefone, conexoes, vencimento, revendedor_codigo } = req.body || {};
 
   let conexoesNumero = null;
   if (conexoes !== undefined && conexoes !== null && String(conexoes).trim() !== "") {
@@ -2014,6 +2041,28 @@ app.put("/clientes/:id", verificarToken, async (req, res) => {
   }
 
   try {
+    let revendedorId = null;
+    const codigo = String(revendedor_codigo || "").trim();
+    if (codigo) {
+      const rev = await db.query(
+        `
+        SELECT id, status
+        FROM revendedores
+        WHERE codigo = $1
+        LIMIT 1
+        `,
+        [codigo]
+      );
+
+      if (rev.rows.length === 0) {
+        return res.status(400).json({ error: "Codigo de revendedor nao encontrado." });
+      }
+      if (String(rev.rows[0].status || "").toLowerCase() !== "aprovado") {
+        return res.status(400).json({ error: "Revendedor ainda nao aprovado." });
+      }
+      revendedorId = rev.rows[0].id;
+    }
+
     const result = await db.query(
       `
       UPDATE clientes
@@ -2022,8 +2071,10 @@ app.put("/clientes/:id", verificarToken, async (req, res) => {
           telefone = $3,
           conexoes = COALESCE($4, conexoes),
           vencimento = COALESCE($5, vencimento),
+          revendedor_id = COALESCE($6, revendedor_id),
+          revendedor_vinculado_em = CASE WHEN $6 IS NOT NULL THEN NOW() ELSE revendedor_vinculado_em END,
           atualizado_em = NOW()
-      WHERE id = $6
+      WHERE id = $7
       RETURNING *
       `,
       [
@@ -2032,6 +2083,7 @@ app.put("/clientes/:id", verificarToken, async (req, res) => {
         telefone ? String(telefone).replace(/\\D/g, "") : null,
         conexoesNumero,
         vencimentoDate,
+        revendedorId,
         id
       ]
     );
