@@ -915,7 +915,7 @@ function conexoesDoPlano(planoTexto) {
   return 1;
 }
 
-function calcularValorComissao({ plano = "", dias = 0, conexoes = 1 } = {}) {
+function calcularValorComissaoPrimeiraVenda({ plano = "", dias = 0, conexoes = 1 } = {}) {
   const p = String(plano || "").toLowerCase();
   const d = Number(dias) || 0;
   const c = Number(conexoes) || 1;
@@ -931,6 +931,13 @@ function calcularValorComissao({ plano = "", dias = 0, conexoes = 1 } = {}) {
   if (ehMensal && c >= 2) return 15;
   if (ehMensal) return 10;
   return 0;
+}
+
+function calcularValorComissaoRenovacao({ valorPagamento = 0 } = {}) {
+  const v = Number(valorPagamento) || 0;
+  if (!Number.isFinite(v) || v <= 0) return 0;
+  // Renovacao: 10% do valor do plano.
+  return Math.round(v * 0.1 * 100) / 100;
 }
 
 async function garantirComissaoDoPagamentoConfirmado(pagamento) {
@@ -964,11 +971,6 @@ async function garantirComissaoDoPagamentoConfirmado(pagamento) {
   const jaExiste = await db.query(`SELECT 1 FROM comissoes WHERE pagamento_id = $1 LIMIT 1`, [Number(pagamento.id)]);
   if (jaExiste.rows.length > 0) return;
 
-  const dias = diasPlano(pagamento);
-  const conexoes = conexoesDoPlano(pagamento.plano);
-  const valor = calcularValorComissao({ plano: pagamento.plano, dias, conexoes });
-  if (!valor || valor <= 0) return;
-
   let tipo = "renovacao";
   try {
     const prev = await db.query(
@@ -990,6 +992,14 @@ async function garantirComissaoDoPagamentoConfirmado(pagamento) {
   } catch {
     tipo = "renovacao";
   }
+
+  const dias = diasPlano(pagamento);
+  const conexoes = conexoesDoPlano(pagamento.plano);
+  const valor =
+    tipo === "primeira_compra"
+      ? calcularValorComissaoPrimeiraVenda({ plano: pagamento.plano, dias, conexoes })
+      : calcularValorComissaoRenovacao({ valorPagamento: pagamento.valor });
+  if (!valor || valor <= 0) return;
 
   await db.query(
     `
@@ -2410,10 +2420,11 @@ app.put("/pagamentos/:id/confirmar", verificarToken, async (req, res) => {
   const { id } = req.params;
 
   try {
-    await db.query(
-      "UPDATE pagamentos SET status = $1 WHERE id = $2",
-      ["confirmado", id]
-    );
+    const atual = await db.query("SELECT * FROM pagamentos WHERE id = $1 LIMIT 1", [id]);
+    if (atual.rows.length === 0) return res.status(404).json({ error: "Pagamento nao encontrado." });
+
+    // Confirma e roda fluxo completo (renova cliente, comissao, limpa teste, notifica se aplicavel).
+    await confirmarPagamentoRecebido(atual.rows[0], "admin_manual");
 
     res.json({ ok: true, message: "Pagamento confirmado" });
   } catch (error) {
@@ -2455,7 +2466,24 @@ app.put("/pagamentos/:id/detalhes", verificarToken, async (req, res) => {
       return res.status(404).json({ error: "Pagamento nao encontrado." });
     }
 
-    return res.json({ ok: true, pagamento: enriquecerPagamento(result.rows[0]) });
+    const atualizado = result.rows[0];
+
+    // Se o pagamento ja estiver confirmado, tenta reconciliar dados (plano/vencimento/comissao).
+    if (String(atualizado.status) === "confirmado") {
+      try {
+        await aplicarRenovacaoCliente(atualizado);
+        await limparTesteIptvDoCliente({
+          usuario: atualizado.cliente_usuario,
+          email: atualizado.email,
+          telefone: atualizado.telefone
+        });
+        await garantirComissaoDoPagamentoConfirmado(atualizado);
+      } catch (e) {
+        console.error("Aviso: falha ao reconciliar pagamento confirmado (continuando):", e?.message || e);
+      }
+    }
+
+    return res.json({ ok: true, pagamento: enriquecerPagamento(atualizado) });
   } catch (error) {
     console.error("Erro ao atualizar detalhes do pagamento:", error);
     return res.status(500).json({ error: "Erro ao atualizar detalhes do pagamento.", detail: String(error?.message || error) });
