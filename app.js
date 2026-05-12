@@ -2308,6 +2308,8 @@ app.put("/pagamentos/:id/detalhes", verificarToken, async (req, res) => {
   const { id } = req.params;
   const cliente_usuario = req.body?.cliente_usuario ? String(req.body.cliente_usuario).trim() : null;
   const cliente_senha = req.body?.cliente_senha ? String(req.body.cliente_senha).trim() : null;
+  const email = req.body?.email ? String(req.body.email).trim().toLowerCase() : null;
+  const telefone = req.body?.telefone ? String(req.body.telefone).replace(/\D/g, "") : null;
   const origem = req.body?.origem ? String(req.body.origem).trim().toLowerCase() : null;
 
   const origemFinal = origem === "pix" || origem === "dinheiro" ? origem : null;
@@ -2318,12 +2320,14 @@ app.put("/pagamentos/:id/detalhes", verificarToken, async (req, res) => {
       UPDATE pagamentos
       SET cliente_usuario = COALESCE($2, cliente_usuario),
           cliente_senha = COALESCE($3, cliente_senha),
-          origem = COALESCE($4, origem),
+          email = COALESCE($4, email),
+          telefone = COALESCE($5, telefone),
+          origem = COALESCE($6, origem),
           atualizado_em = NOW()
       WHERE id = $1
       RETURNING *
       `,
-      [id, cliente_usuario, cliente_senha, origemFinal]
+      [id, cliente_usuario, cliente_senha, email, telefone, origemFinal]
     );
 
     if (result.rows.length === 0) {
