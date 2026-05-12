@@ -1383,7 +1383,8 @@ app.get("/revendedor/me", verificarTokenRevendedor, async (req, res) => {
     );
 
     const clientesAtivosMes = Number(stats.rows[0]?.clientes_ativos_mes || 0);
-    const bonusMes = clientesAtivosMes >= 15 ? 50 : 0;
+    // Bonus: mais de 10 vendas ativas no mes => R$ 50,00
+    const bonusMes = clientesAtivosMes > 10 ? 50 : 0;
 
     return res.json({
       ok: true,
@@ -2253,7 +2254,7 @@ app.get("/revendedores", verificarToken, async (req, res) => {
               AND p2.confirmado_em >= m2.inicio
               AND p2.confirmado_em < m2.fim
               AND cl2.revendedor_id = r.id
-          ), 0) >= 15 THEN 50
+          ), 0) > 10 THEN 50
           ELSE 0
         END AS bonus_mes
       FROM revendedores r
