@@ -2136,22 +2136,8 @@ app.delete("/clientes/:id", verificarToken, async (req, res) => {
   const { id } = req.params;
 
   try {
-    const atual = await db.query(
-      `SELECT id, usuario, plano FROM clientes WHERE id = $1 LIMIT 1`,
-      [id]
-    );
+    const atual = await db.query(`SELECT id FROM clientes WHERE id = $1 LIMIT 1`, [id]);
     if (atual.rows.length === 0) return res.status(404).json({ error: "Cliente nao encontrado." });
-
-    // Evita excluir cliente "real" sem querer: permite excluir apenas se plano conter TESTE
-    // ou se o usuario estiver claramente marcado como teste.
-    const c = atual.rows[0];
-    const plano = String(c.plano || "").toUpperCase();
-    const usuario = String(c.usuario || "");
-    const podeExcluir = plano.includes("TESTE") || usuario.toLowerCase().startsWith("teste");
-
-    if (!podeExcluir) {
-      return res.status(400).json({ error: "Nao permitido excluir cliente (use apenas para testes)." });
-    }
 
     await db.query(`DELETE FROM clientes WHERE id = $1`, [id]);
     return res.json({ ok: true });
@@ -2161,24 +2147,13 @@ app.delete("/clientes/:id", verificarToken, async (req, res) => {
   }
 });
 
-// Excluir revendedor (apenas limpeza de testes). So permite se nao houver clientes vinculados.
+// Excluir revendedor (limpeza no painel).
 app.delete("/revendedores/:id", verificarToken, async (req, res) => {
   const { id } = req.params;
 
   try {
-    const atual = await db.query(
-      `SELECT id, codigo, email, status FROM revendedores WHERE id = $1 LIMIT 1`,
-      [id]
-    );
+    const atual = await db.query(`SELECT id FROM revendedores WHERE id = $1 LIMIT 1`, [id]);
     if (atual.rows.length === 0) return res.status(404).json({ error: "Revendedor nao encontrado." });
-
-    const vinc = await db.query(
-      `SELECT 1 FROM clientes WHERE revendedor_id = $1 LIMIT 1`,
-      [id]
-    );
-    if (vinc.rows.length > 0) {
-      return res.status(400).json({ error: "Nao permitido excluir: existem clientes vinculados a este revendedor." });
-    }
 
     await db.query(`DELETE FROM revendedores WHERE id = $1`, [id]);
     return res.json({ ok: true });
