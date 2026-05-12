@@ -869,6 +869,13 @@ async function confirmarPagamentoRecebido(pagamento, origem = "webhook") {
 
   const confirmado = result.rows[0] || pagamento;
 
+  // Atualiza vencimento do cliente (renovacao) quando tivermos algum identificador do cliente.
+  try {
+    await aplicarRenovacaoCliente(confirmado);
+  } catch (e) {
+    console.error("Erro ao aplicar renovacao no cliente (continuando):", e);
+  }
+
   if (!confirmado.notificado_em) {
     await notificarVendaAdmin({ tipo: "Pix recebido", pagamento: confirmado, origem, telegramTipo: "pix" });
     try {
@@ -894,6 +901,73 @@ async function sincronizarPagamentoMercadoPago(pagamento) {
   }
 
   return pagamento;
+}
+
+function conexoesDoPlano(planoTexto) {
+  const plano = String(planoTexto || "").toLowerCase();
+  if (plano.includes("2 tela") || plano.includes("2 telas")) return 2;
+  return 1;
+}
+
+async function aplicarRenovacaoCliente(pagamento) {
+  if (!pagamento) return;
+
+  const usuario = String(pagamento.cliente_usuario || "").trim();
+  const senha = String(pagamento.cliente_senha || "").trim() || null;
+  const email = pagamento.email ? String(pagamento.email).trim().toLowerCase() : null;
+  const telefone = pagamento.telefone ? String(pagamento.telefone).replace(/\D/g, "") : null;
+
+  // Precisamos de algum identificador para achar o cliente.
+  if (!usuario && !email && !telefone) return;
+
+  const dias = diasPlano(pagamento);
+  const conexoes = conexoesDoPlano(pagamento.plano);
+
+  // Pega vencimento atual para somar a partir do maior entre vencimento e agora.
+  const clienteAtual = await db.query(
+    `
+    SELECT id, vencimento
+    FROM clientes
+    WHERE ($1 <> '' AND usuario = $1)
+       OR ($2 IS NOT NULL AND email = $2)
+       OR ($3 IS NOT NULL AND telefone = $3)
+    ORDER BY atualizado_em DESC, id DESC
+    LIMIT 1
+    `,
+    [usuario, email, telefone]
+  );
+
+  if (clienteAtual.rows.length === 0) return;
+  const c = clienteAtual.rows[0];
+
+  const agora = new Date();
+  const vencAtual = c.vencimento ? new Date(c.vencimento) : null;
+  const base = (vencAtual && vencAtual > agora) ? vencAtual : agora;
+  const novoVenc = new Date(base);
+  novoVenc.setDate(novoVenc.getDate() + dias);
+
+  await db.query(
+    `
+    UPDATE clientes
+    SET plano = $2,
+        conexoes = $3,
+        vencimento = $4,
+        email = COALESCE($5, email),
+        telefone = COALESCE($6, telefone),
+        senha = COALESCE($7, senha),
+        atualizado_em = NOW()
+    WHERE id = $1
+    `,
+    [
+      c.id,
+      String(pagamento.plano || "").trim() || "MENSAL",
+      conexoes,
+      novoVenc.toISOString(),
+      email,
+      telefone,
+      senha || null
+    ]
+  );
 }
 
 let pixSyncEmAndamento = false;
@@ -2320,6 +2394,13 @@ app.post("/pagamentos/dinheiro", verificarToken, async (req, res) => {
       ]
     );
 
+    // Renovacao do cliente (se houver login/email/telefone).
+    try {
+      await aplicarRenovacaoCliente(inserted.rows[0]);
+    } catch (e) {
+      console.error("Erro ao aplicar renovacao no cliente (dinheiro):", e);
+    }
+
     return res.json({ ok: true, pagamento: enriquecerPagamento(inserted.rows[0]) });
   } catch (error) {
     console.error("Erro ao confirmar pagamento em dinheiro:", error);
@@ -2340,16 +2421,14 @@ app.post("/webhook", async (req, res) => {
 
     if (!paymentId) return res.sendStatus(200);
 
-    const payment = new Payment(client);
-    const result = await payment.get({ id: paymentId });
+    // Confirma via rotina central (marca confirmado_em, notifica, renova cliente).
+    const pagamentoResult = await db.query(
+      "SELECT * FROM pagamentos WHERE payment_id = $1 ORDER BY id DESC LIMIT 1",
+      [String(paymentId)]
+    );
 
-    if (result.status === "approved") {
-      await db.query(
-        "UPDATE pagamentos SET status = $1 WHERE payment_id = $2",
-        ["confirmado", String(paymentId)]
-      );
-
-      console.log("✅ Pagamento confirmado automaticamente");
+    if (pagamentoResult.rows.length > 0) {
+      await sincronizarPagamentoMercadoPago(pagamentoResult.rows[0]);
     }
 
     res.sendStatus(200);
