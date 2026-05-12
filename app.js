@@ -950,13 +950,15 @@ async function garantirComissaoDoPagamentoConfirmado(pagamento) {
   const telefone = pagamento.telefone ? String(pagamento.telefone).replace(/\D/g, "") : null;
   if (!usuario && !email && !telefone) return;
 
+  // IMPORTANTE: quando $2/$3 vem null, o Postgres pode não conseguir inferir o tipo do parâmetro
+  // em expressões como "email = $2". Por isso fazemos cast explícito para text.
   const clienteRes = await db.query(
     `
     SELECT id, revendedor_id
     FROM clientes
     WHERE ($1 <> '' AND usuario = $1)
-       OR ($2 IS NOT NULL AND email = $2)
-       OR ($3 IS NOT NULL AND telefone = $3)
+       OR ($2 IS NOT NULL AND email = $2::text)
+       OR ($3 IS NOT NULL AND telefone = $3::text)
     ORDER BY atualizado_em DESC, id DESC
     LIMIT 1
     `,
@@ -981,8 +983,8 @@ async function garantirComissaoDoPagamentoConfirmado(pagamento) {
         AND p.id <> $1
         AND (
           ($2 <> '' AND p.cliente_usuario = $2)
-          OR ($3 IS NOT NULL AND p.email = $3)
-          OR ($4 IS NOT NULL AND p.telefone = $4)
+          OR ($3 IS NOT NULL AND p.email = $3::text)
+          OR ($4 IS NOT NULL AND p.telefone = $4::text)
         )
       LIMIT 1
       `,
@@ -1030,8 +1032,8 @@ async function aplicarRenovacaoCliente(pagamento) {
     SELECT id, vencimento
     FROM clientes
     WHERE ($1 <> '' AND usuario = $1)
-       OR ($2 IS NOT NULL AND email = $2)
-       OR ($3 IS NOT NULL AND telefone = $3)
+       OR ($2 IS NOT NULL AND email = $2::text)
+       OR ($3 IS NOT NULL AND telefone = $3::text)
     ORDER BY atualizado_em DESC, id DESC
     LIMIT 1
     `,
@@ -1083,8 +1085,8 @@ async function limparTesteIptvDoCliente({ usuario = "", email = null, telefone =
       `
       DELETE FROM testes_iptv
       WHERE ($1 <> '' AND login = $1)
-         OR ($2 IS NOT NULL AND email = $2)
-         OR ($3 IS NOT NULL AND telefone = $3)
+         OR ($2 IS NOT NULL AND email = $2::text)
+         OR ($3 IS NOT NULL AND telefone = $3::text)
       `,
       [u, e, t]
     );
