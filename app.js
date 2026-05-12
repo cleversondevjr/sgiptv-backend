@@ -3173,6 +3173,17 @@ const PORT = process.env.PORT || 4000;
 
 app.listen(PORT, () => {
   console.log("🚀 Backend rodando na porta", PORT);
+
+  // Backfill: garante comissoes para pagamentos confirmados que ficaram sem comissao
+  // (por exemplo: pagamento confirmado antes/fora do fluxo normal).
+  // Delay pequeno para o banco e as rotinas de "garantir tabelas/colunas" concluirem.
+  setTimeout(() => {
+    try {
+      backfillComissoesRecentes();
+    } catch (e) {
+      console.error("Erro ao iniciar backfillComissoesRecentes:", e?.message || e);
+    }
+  }, 8000);
 });
 
 app.get("/testes-iptv", verificarToken, async (req, res) => {
