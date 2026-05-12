@@ -1993,7 +1993,7 @@ app.get("/clientes", verificarToken, async (req, res) => {
 
 app.put("/clientes/:id", verificarToken, async (req, res) => {
   const { id } = req.params;
-  const { nome, email, telefone, conexoes } = req.body || {};
+  const { nome, email, telefone, conexoes, vencimento } = req.body || {};
 
   let conexoesNumero = null;
   if (conexoes !== undefined && conexoes !== null && String(conexoes).trim() !== "") {
@@ -2004,6 +2004,15 @@ app.put("/clientes/:id", verificarToken, async (req, res) => {
     conexoesNumero = parsed;
   }
 
+  let vencimentoDate = null;
+  if (vencimento !== undefined && vencimento !== null && String(vencimento).trim() !== "") {
+    const d = new Date(String(vencimento));
+    if (Number.isNaN(d.getTime())) {
+      return res.status(400).json({ error: "Vencimento invalido. Use uma data/hora valida." });
+    }
+    vencimentoDate = d.toISOString();
+  }
+
   try {
     const result = await db.query(
       `
@@ -2012,8 +2021,9 @@ app.put("/clientes/:id", verificarToken, async (req, res) => {
           email = $2,
           telefone = $3,
           conexoes = COALESCE($4, conexoes),
+          vencimento = COALESCE($5, vencimento),
           atualizado_em = NOW()
-      WHERE id = $5
+      WHERE id = $6
       RETURNING *
       `,
       [
@@ -2021,6 +2031,7 @@ app.put("/clientes/:id", verificarToken, async (req, res) => {
         email ? String(email).trim().toLowerCase() : null,
         telefone ? String(telefone).replace(/\\D/g, "") : null,
         conexoesNumero,
+        vencimentoDate,
         id
       ]
     );
