@@ -63,7 +63,9 @@ const JWT_SECRET = process.env.JWT_SECRET.trim();
 const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET?.trim() || "";
 const NOTIFICATION_URL =
   process.env.WEBHOOK_NOTIFICATION_URL?.trim() ||
-  "https://sgiptv-backend.onrender.com/webhook";
+  "https://api.sgiptv.com.br/webhook";
+
+const PIX_SYNC_INTERVAL_MS = Number(process.env.PIX_SYNC_INTERVAL_MS || 60_000);
 
 const ADMIN_EMAIL_AVISOS = "suportesgiptv01@gmail.com";
 const ADMIN_WHATSAPP_AVISOS = "5511919628194";
@@ -894,6 +896,44 @@ async function sincronizarPagamentoMercadoPago(pagamento) {
   return pagamento;
 }
 
+let pixSyncEmAndamento = false;
+async function sincronizarPixPendentesBackground() {
+  if (pixSyncEmAndamento) return;
+  pixSyncEmAndamento = true;
+  try {
+    // Limpeza leve antes de sincronizar.
+    await cancelarPagamentosPixExpirados();
+    await limparPagamentosCanceladosAntigos();
+
+    // Busca os mais recentes primeiro. Só PIX "de verdade" (payment_id numérico do MercadoPago).
+    const result = await db.query(
+      `
+      SELECT *
+      FROM pagamentos
+      WHERE status = $1
+        AND payment_id ~ '^[0-9]+$'
+        AND criado_em >= NOW() - INTERVAL '2 days'
+      ORDER BY criado_em DESC
+      LIMIT 50
+      `,
+      ["pendente"]
+    );
+
+    for (const pagamento of result.rows) {
+      try {
+        await sincronizarPagamentoMercadoPago(pagamento);
+      } catch (e) {
+        // Não derrubar o loop por um pagamento quebrado.
+        console.error("Falha ao sincronizar pagamento pendente (continuando):", e);
+      }
+    }
+  } catch (error) {
+    console.error("Erro no sincronizador de PIX pendente:", error);
+  } finally {
+    pixSyncEmAndamento = false;
+  }
+}
+
 async function cancelarPagamentosPixExpirados() {
   try {
     await db.query(
@@ -1411,6 +1451,15 @@ app.get("/", (req, res) => {
   res.send("Backend funcionando 🚀");
 });
 
+// Garante que pagamentos PIX pendentes sejam sincronizados mesmo se o webhook falhar.
+// (Ex.: URL antiga, instabilidade do provedor, etc.)
+if (PIX_SYNC_INTERVAL_MS > 0) {
+  setInterval(sincronizarPixPendentesBackground, PIX_SYNC_INTERVAL_MS).unref?.();
+  // Roda uma vez no boot (não bloqueia o start do servidor).
+  setTimeout(sincronizarPixPendentesBackground, 5_000).unref?.();
+  console.log(`Sincronizador PIX pendente ativo: a cada ${PIX_SYNC_INTERVAL_MS}ms`);
+}
+
 app.post("/pix", limitePublico, async (req, res) => {
   let { planoId, valor, email, telefone, cliente_usuario, cliente_senha } = req.body;
   const planoSelecionado = obterPlano(planoId, valor);
@@ -1433,6 +1482,7 @@ app.post("/pix", limitePublico, async (req, res) => {
   const clienteSenha = String(cliente_senha || "").trim() || null;
 
   try {
+    console.log("PIX /pix solicitado:", { planoId, valor, email, telefone });
     const payment = new Payment(client);
     const pixExpiraEm = adicionarTempo(new Date(), PIX_EXPIRACAO_MINUTOS, "minutos");
 
@@ -1450,14 +1500,16 @@ app.post("/pix", limitePublico, async (req, res) => {
     });
 
     const paymentId = String(result.id);
+    console.log("PIX /pix criado no MercadoPago:", { paymentId });
 
-    await db.query(
+    const insertResult = await db.query(
       `
       INSERT INTO pagamentos (email, telefone, plano, valor, status, payment_id, cliente_usuario, cliente_senha, origem)
       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
       `,
       [email, telefone, plano, valor, "pendente", paymentId, clienteUsuario, clienteSenha, "pix"]
     );
+    console.log("PIX /pix registrado no banco:", { paymentId, inserted: insertResult?.rowCount ?? 0 });
 
     const data = result.point_of_interaction.transaction_data;
 
