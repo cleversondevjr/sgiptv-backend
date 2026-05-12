@@ -946,8 +946,10 @@ async function garantirComissaoDoPagamentoConfirmado(pagamento) {
   if (!pagamento.id) return; // precisamos do id para FK (pagamento_id)
 
   const usuario = String(pagamento.cliente_usuario || "").trim();
-  const email = pagamento.email ? String(pagamento.email).trim().toLowerCase() : null;
-  const telefone = pagamento.telefone ? String(pagamento.telefone).replace(/\D/g, "") : null;
+  // Evita parâmetro NULL "sem tipo" no Postgres em algumas expressões com $2/$3.
+  // Preferimos string vazia e fazemos as checagens com "<> ''" no SQL.
+  const email = pagamento.email ? String(pagamento.email).trim().toLowerCase() : "";
+  const telefone = pagamento.telefone ? String(pagamento.telefone).replace(/\D/g, "") : "";
   if (!usuario && !email && !telefone) return;
 
   // IMPORTANTE: quando $2/$3 vem null, o Postgres pode não conseguir inferir o tipo do parâmetro
@@ -959,8 +961,8 @@ async function garantirComissaoDoPagamentoConfirmado(pagamento) {
       SELECT id, revendedor_id
       FROM clientes
       WHERE ($1 <> '' AND usuario = $1::text)
-         OR ($2 IS NOT NULL AND email = $2::text)
-         OR ($3 IS NOT NULL AND telefone = $3::text)
+         OR ($2::text <> '' AND email = $2::text)
+         OR ($3::text <> '' AND telefone = $3::text)
       ORDER BY atualizado_em DESC, id DESC
       LIMIT 1
       `,
@@ -988,9 +990,9 @@ async function garantirComissaoDoPagamentoConfirmado(pagamento) {
       WHERE p.status = 'confirmado'
         AND p.id <> $1
         AND (
-          ($2 <> '' AND p.cliente_usuario = $2::text)
-          OR ($3 IS NOT NULL AND p.email = $3::text)
-          OR ($4 IS NOT NULL AND p.telefone = $4::text)
+          ($2::text <> '' AND p.cliente_usuario = $2::text)
+          OR ($3::text <> '' AND p.email = $3::text)
+          OR ($4::text <> '' AND p.telefone = $4::text)
         )
       LIMIT 1
       `,
@@ -1029,8 +1031,8 @@ async function aplicarRenovacaoCliente(pagamento) {
 
   const usuario = String(pagamento.cliente_usuario || "").trim();
   const senha = String(pagamento.cliente_senha || "").trim() || null;
-  const email = pagamento.email ? String(pagamento.email).trim().toLowerCase() : null;
-  const telefone = pagamento.telefone ? String(pagamento.telefone).replace(/\D/g, "") : null;
+  const email = pagamento.email ? String(pagamento.email).trim().toLowerCase() : "";
+  const telefone = pagamento.telefone ? String(pagamento.telefone).replace(/\D/g, "") : "";
 
   // Precisamos de algum identificador para achar o cliente.
   if (!usuario && !email && !telefone) return;
@@ -1044,8 +1046,8 @@ async function aplicarRenovacaoCliente(pagamento) {
     SELECT id, vencimento
     FROM clientes
     WHERE ($1 <> '' AND usuario = $1)
-       OR ($2 IS NOT NULL AND email = $2::text)
-       OR ($3 IS NOT NULL AND telefone = $3::text)
+       OR ($2::text <> '' AND email = $2::text)
+       OR ($3::text <> '' AND telefone = $3::text)
     ORDER BY atualizado_em DESC, id DESC
     LIMIT 1
     `,
@@ -1087,8 +1089,8 @@ async function aplicarRenovacaoCliente(pagamento) {
 
 async function limparTesteIptvDoCliente({ usuario = "", email = null, telefone = null } = {}) {
   const u = String(usuario || "").trim();
-  const e = email ? String(email).trim().toLowerCase() : null;
-  const t = telefone ? String(telefone).replace(/\D/g, "") : null;
+  const e = email ? String(email).trim().toLowerCase() : "";
+  const t = telefone ? String(telefone).replace(/\D/g, "") : "";
 
   if (!u && !e && !t) return;
 
@@ -1097,8 +1099,8 @@ async function limparTesteIptvDoCliente({ usuario = "", email = null, telefone =
       `
       DELETE FROM testes_iptv
       WHERE ($1 <> '' AND login = $1)
-         OR ($2 IS NOT NULL AND email = $2::text)
-         OR ($3 IS NOT NULL AND telefone = $3::text)
+         OR ($2::text <> '' AND email = $2::text)
+         OR ($3::text <> '' AND telefone = $3::text)
       `,
       [u, e, t]
     );
