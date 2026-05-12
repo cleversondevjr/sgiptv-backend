@@ -2315,6 +2315,8 @@ app.put("/pagamentos/:id/detalhes", verificarToken, async (req, res) => {
   const origemFinal = origem === "pix" || origem === "dinheiro" ? origem : null;
 
   try {
+    // Se for um pagamento associado a um cliente, permite "puxar do cadastro" e salvar aqui.
+    // Aceitamos email/telefone vazios como "nao alterar". Para limpar, o admin deve excluir e recriar.
     const result = await db.query(
       `
       UPDATE pagamentos
@@ -2574,6 +2576,15 @@ app.post("/cliente/consulta", limitePublico, async (req, res) => {
 
       const cliente = result.rows[0];
 
+      // Busca (se houver) o codigo do revendedor vinculado, para exibir no painel do cliente.
+      let revendedorCodigo = null;
+      if (cliente.revendedor_id) {
+        try {
+          const rev = await db.query(`SELECT codigo FROM revendedores WHERE id = $1 LIMIT 1`, [cliente.revendedor_id]);
+          revendedorCodigo = rev.rows[0]?.codigo || null;
+        } catch {}
+      }
+
       avisarVencimentosClientes().catch(err => console.error("Erro avisos vencimento:", err));
 
       return res.json({
@@ -2587,7 +2598,8 @@ app.post("/cliente/consulta", limitePublico, async (req, res) => {
           vencimento: cliente.vencimento,
           nome: cliente.nome,
           email: cliente.email,
-          telefone: cliente.telefone
+          telefone: cliente.telefone,
+          revendedor_codigo: revendedorCodigo
         }
       });
     } catch (error) {
