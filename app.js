@@ -1720,6 +1720,75 @@ app.post("/admin/pix/teste", verificarToken, async (req, res) => {
   }
 });
 
+// Importa um pagamento do Mercado Pago pelo ID (util quando um pagamento real foi feito mas nao ficou registrado no banco).
+// Observacao: nem sempre o Mercado Pago retorna telefone; nesses casos, salvamos telefone como null.
+app.post("/admin/pix/importar", verificarToken, async (req, res) => {
+  const paymentId = String(req.body?.payment_id || req.body?.paymentId || "").trim();
+  if (!paymentId || !/^[0-9]+$/.test(paymentId)) {
+    return res.status(400).json({ error: "Informe payment_id numerico." });
+  }
+
+  try {
+    const payment = new Payment(client);
+    const mp = await payment.get({ id: paymentId });
+
+    const plano = String(mp?.description || "Pagamento PIX (importado)").trim();
+    const valor = Number(mp?.transaction_amount || 0);
+    const email = String(mp?.payer?.email || "").trim() || null;
+    const telefone = null;
+
+    const status =
+      mp?.status === "approved" ? "confirmado" :
+      mp?.status === "cancelled" ? "cancelado" :
+      "pendente";
+
+    // Cria o registro se nao existir; se existir, atualiza status/origem.
+    const existente = await db.query(
+      "SELECT * FROM pagamentos WHERE payment_id = $1 LIMIT 1",
+      [paymentId]
+    );
+
+    let salvo;
+    if (existente.rows.length === 0) {
+      const insert = await db.query(
+        `
+        INSERT INTO pagamentos (email, telefone, plano, valor, status, payment_id, origem, confirmado_em)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, ${status === "confirmado" ? "NOW()" : "NULL"})
+        RETURNING *
+        `,
+        [email, telefone, plano, valor, status, paymentId, "pix_import"]
+      );
+      salvo = insert.rows[0];
+    } else {
+      const update = await db.query(
+        `
+        UPDATE pagamentos
+        SET status = $1,
+            origem = $2,
+            confirmado_em = CASE WHEN $1 = 'confirmado' AND confirmado_em IS NULL THEN NOW() ELSE confirmado_em END
+        WHERE payment_id = $3
+        RETURNING *
+        `,
+        [status, "pix_import", paymentId]
+      );
+      salvo = update.rows[0];
+    }
+
+    // Se veio aprovado e ainda nao notificou, notifica agora.
+    if (salvo?.status === "confirmado" && !salvo?.notificado_em) {
+      await notificarVendaAdmin({ tipo: "Pix recebido (importado)", pagamento: salvo, origem: "pix_import", telegramTipo: "pix" });
+      try {
+        await db.query("UPDATE pagamentos SET notificado_em = NOW() WHERE payment_id = $1", [paymentId]);
+      } catch {}
+    }
+
+    return res.json({ ok: true, pagamento: enriquecerPagamento(salvo), mp_status: mp?.status || null });
+  } catch (error) {
+    console.error("Erro ao importar pagamento MP:", error);
+    return res.status(500).json({ error: "Erro ao importar pagamento do Mercado Pago.", detail: String(error?.message || error) });
+  }
+});
+
 app.get("/pagamentos/mes", verificarToken, async (req, res) => {
   const year = Number(req.query.year);
   const month = Number(req.query.month);
