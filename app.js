@@ -631,6 +631,38 @@ function obterChatIdTelegram(tipo) {
   return especifico || base;
 }
 
+async function enviarEmailPara(destinatario, { assunto, html, text }) {
+  try {
+    const to = String(destinatario || "").trim();
+    if (!to) return false;
+
+    const transporter = criarTransporterEmail();
+    if (!transporter) return false;
+
+    const baseFrom = String(process.env.EMAIL_FROM || "").trim();
+    const fromEmail =
+      extrairEmailFrom(baseFrom) ||
+      String(process.env.SMTP_USER || process.env.EMAIL_USER || "").trim();
+    const fromName =
+      extrairNomeFrom(baseFrom) ||
+      String(process.env.EMAIL_FROM_NAME || "SG IPTV").trim();
+    const from = fromEmail ? `"${fromName}" <${fromEmail}>` : undefined;
+
+    await transporter.sendMail({
+      ...(from ? { from } : {}),
+      to,
+      subject: assunto,
+      text,
+      html
+    });
+
+    return true;
+  } catch (error) {
+    console.error("Erro ao enviar email:", error);
+    return false;
+  }
+}
+
 async function enviarTelegramAvisoAdmin(texto, tipo = "default") {
   const token = String(process.env.TELEGRAM_BOT_TOKEN || "").trim();
   const chatId = obterChatIdTelegram(tipo);
@@ -2503,10 +2535,15 @@ app.put("/pagamentos/:id/confirmar", verificarToken, async (req, res) => {
 app.post("/revendedores/:id/comissoes/pagar", verificarToken, async (req, res) => {
   const id = String(req.params.id || "").trim();
   const transacaoId = req.body && req.body.transacao_id ? String(req.body.transacao_id).trim() : null;
+  const notificar = req.body && typeof req.body.notificar === "boolean" ? req.body.notificar : true;
 
   if (!id) return res.status(400).json({ error: "Informe o id do revendedor." });
 
   try {
+    const revRes = await db.query(`SELECT id, codigo, email, nome_completo, pix_cpf FROM revendedores WHERE id = $1 LIMIT 1`, [id]);
+    if (revRes.rows.length === 0) return res.status(404).json({ error: "Revendedor nao encontrado." });
+    const rev = revRes.rows[0];
+
     const pend = await db.query(
       `
       SELECT COALESCE(SUM(valor), 0) AS total, COUNT(*) AS qtd
@@ -2532,6 +2569,22 @@ app.post("/revendedores/:id/comissoes/pagar", verificarToken, async (req, res) =
       [id, transacaoId]
     );
 
+    if (notificar && rev.email) {
+      const assunto = "SG IPTV - Comissao paga";
+      const text = [
+        "SG IPTV - Comissao paga",
+        "",
+        `Revendedor: ${rev.nome_completo || "-"} (${rev.codigo || "-"})`,
+        `PIX/CPF: ${rev.pix_cpf || "-"}`,
+        `Valor: R$ ${total.toFixed(2)}`,
+        `Itens: ${qtd}`,
+        transacaoId ? `Comprovante/ID: ${transacaoId}` : "",
+        "",
+        "Pagamento registrado no painel Admin."
+      ].filter(Boolean).join("\n");
+      await enviarEmailPara(rev.email, { assunto, text, html: `<pre style="font-family:Arial, sans-serif; white-space:pre-wrap;">${text}</pre>` });
+    }
+
     return res.json({ ok: true, total, qtd });
   } catch (error) {
     console.error("Erro ao marcar comissoes como pagas:", error);
@@ -2543,10 +2596,15 @@ app.post("/revendedores/:id/comissoes/pagar", verificarToken, async (req, res) =
 app.post("/revendedores/:id/bonus/pagar", verificarToken, async (req, res) => {
   const id = String(req.params.id || "").trim();
   const transacaoId = req.body && req.body.transacao_id ? String(req.body.transacao_id).trim() : null;
+  const notificar = req.body && typeof req.body.notificar === "boolean" ? req.body.notificar : true;
 
   if (!id) return res.status(400).json({ error: "Informe o id do revendedor." });
 
   try {
+    const revRes = await db.query(`SELECT id, codigo, email, nome_completo, pix_cpf FROM revendedores WHERE id = $1 LIMIT 1`, [id]);
+    if (revRes.rows.length === 0) return res.status(404).json({ error: "Revendedor nao encontrado." });
+    const rev = revRes.rows[0];
+
     // Recalcula bonus do mes (mesma regra da listagem).
     const bonusRes = await db.query(
       `
@@ -2596,6 +2654,21 @@ app.post("/revendedores/:id/bonus/pagar", verificarToken, async (req, res) => {
       `,
       [id, bonusPendente, transacaoId]
     );
+
+    if (notificar && rev.email) {
+      const assunto = "SG IPTV - Bonus pago";
+      const text = [
+        "SG IPTV - Bonus pago",
+        "",
+        `Revendedor: ${rev.nome_completo || "-"} (${rev.codigo || "-"})`,
+        `PIX/CPF: ${rev.pix_cpf || "-"}`,
+        `Valor: R$ ${bonusPendente.toFixed(2)}`,
+        transacaoId ? `Comprovante/ID: ${transacaoId}` : "",
+        "",
+        "Pagamento registrado no painel Admin."
+      ].filter(Boolean).join("\n");
+      await enviarEmailPara(rev.email, { assunto, text, html: `<pre style="font-family:Arial, sans-serif; white-space:pre-wrap;">${text}</pre>` });
+    }
 
     return res.json({ ok: true, valor: bonusPendente });
   } catch (error) {
