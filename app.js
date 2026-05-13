@@ -631,7 +631,7 @@ function obterChatIdTelegram(tipo) {
   return especifico || base;
 }
 
-async function enviarEmailPara(destinatario, { assunto, html, text }) {
+async function enviarEmailPara(destinatario, { assunto, html, text, attachments } = {}) {
   try {
     const to = String(destinatario || "").trim();
     if (!to) return false;
@@ -653,7 +653,8 @@ async function enviarEmailPara(destinatario, { assunto, html, text }) {
       to,
       subject: assunto,
       text,
-      html
+      html,
+      ...(Array.isArray(attachments) && attachments.length ? { attachments } : {})
     });
 
     return true;
@@ -661,6 +662,35 @@ async function enviarEmailPara(destinatario, { assunto, html, text }) {
     console.error("Erro ao enviar email:", error);
     return false;
   }
+}
+
+function normalizarAnexoComprovante(comprovante) {
+  if (!comprovante || typeof comprovante !== "object") return null;
+
+  const name = String(comprovante.name || "comprovante").trim().slice(0, 120);
+  const mime = String(comprovante.mime || "").trim().slice(0, 120);
+  const base64 = String(comprovante.base64 || "").trim();
+
+  if (!mime || !base64) return null;
+
+  // Limite simples para evitar payloads gigantes (2MB base64 aprox 1.5MB bin).
+  if (base64.length > 2_800_000) return null;
+
+  let buf;
+  try {
+    buf = Buffer.from(base64, "base64");
+  } catch {
+    return null;
+  }
+  if (!buf || buf.length <= 0) return null;
+
+  const safeName = name.replace(/[^\w.\-()\s]/g, "_");
+
+  return {
+    filename: safeName || "comprovante",
+    content: buf,
+    contentType: mime
+  };
 }
 
 async function enviarTelegramAvisoAdmin(texto, tipo = "default") {
@@ -2536,6 +2566,7 @@ app.post("/revendedores/:id/comissoes/pagar", verificarToken, async (req, res) =
   const id = String(req.params.id || "").trim();
   const transacaoId = req.body && req.body.transacao_id ? String(req.body.transacao_id).trim() : null;
   const notificar = req.body && typeof req.body.notificar === "boolean" ? req.body.notificar : true;
+  const comprovante = req.body && req.body.comprovante ? req.body.comprovante : null;
 
   if (!id) return res.status(400).json({ error: "Informe o id do revendedor." });
 
@@ -2582,7 +2613,13 @@ app.post("/revendedores/:id/comissoes/pagar", verificarToken, async (req, res) =
         "",
         "Pagamento registrado no painel Admin."
       ].filter(Boolean).join("\n");
-      await enviarEmailPara(rev.email, { assunto, text, html: `<pre style="font-family:Arial, sans-serif; white-space:pre-wrap;">${text}</pre>` });
+      const anexo = normalizarAnexoComprovante(comprovante);
+      await enviarEmailPara(rev.email, {
+        assunto,
+        text,
+        html: `<pre style="font-family:Arial, sans-serif; white-space:pre-wrap;">${text}</pre>`,
+        ...(anexo ? { attachments: [anexo] } : {})
+      });
     }
 
     return res.json({ ok: true, total, qtd });
@@ -2597,6 +2634,7 @@ app.post("/revendedores/:id/bonus/pagar", verificarToken, async (req, res) => {
   const id = String(req.params.id || "").trim();
   const transacaoId = req.body && req.body.transacao_id ? String(req.body.transacao_id).trim() : null;
   const notificar = req.body && typeof req.body.notificar === "boolean" ? req.body.notificar : true;
+  const comprovante = req.body && req.body.comprovante ? req.body.comprovante : null;
 
   if (!id) return res.status(400).json({ error: "Informe o id do revendedor." });
 
@@ -2667,7 +2705,13 @@ app.post("/revendedores/:id/bonus/pagar", verificarToken, async (req, res) => {
         "",
         "Pagamento registrado no painel Admin."
       ].filter(Boolean).join("\n");
-      await enviarEmailPara(rev.email, { assunto, text, html: `<pre style="font-family:Arial, sans-serif; white-space:pre-wrap;">${text}</pre>` });
+      const anexo = normalizarAnexoComprovante(comprovante);
+      await enviarEmailPara(rev.email, {
+        assunto,
+        text,
+        html: `<pre style="font-family:Arial, sans-serif; white-space:pre-wrap;">${text}</pre>`,
+        ...(anexo ? { attachments: [anexo] } : {})
+      });
     }
 
     return res.json({ ok: true, valor: bonusPendente });
