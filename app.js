@@ -2583,7 +2583,25 @@ app.get("/revendedores", verificarToken, async (req, res) => {
       `
       WITH mes AS (
         SELECT date_trunc('month', NOW()) AS inicio,
-               date_trunc('month', NOW()) + interval '1 month' AS fim
+               date_trunc('month', NOW()) + interval '1 month' AS fim,
+               date_trunc('month', NOW())::date AS mes_date
+      ),
+      comissao AS (
+        SELECT
+          revendedor_id,
+          COALESCE(SUM(CASE WHEN status = 'pendente' THEN valor ELSE 0 END), 0) AS total_pendente
+        FROM comissoes
+        GROUP BY revendedor_id
+      ),
+      bonus AS (
+        SELECT
+          revendedor_id,
+          COALESCE(SUM(CASE WHEN status = 'pago' THEN valor ELSE 0 END), 0) AS bonus_pago_mes,
+          COALESCE(SUM(CASE WHEN status = 'pendente' THEN valor ELSE 0 END), 0) AS bonus_pendente_mes
+        FROM bonus_pagamentos bp
+        JOIN mes m ON TRUE
+        WHERE bp.mes = m.mes_date
+        GROUP BY revendedor_id
       )
       SELECT
         r.id,
@@ -2592,9 +2610,10 @@ app.get("/revendedores", verificarToken, async (req, res) => {
         r.nome_completo,
         r.pix_cpf,
         r.status,
-        COALESCE(SUM(CASE WHEN c.status = 'pendente' THEN c.valor ELSE 0 END), 0) AS total_pendente,
-        COALESCE(SUM(CASE WHEN bp.status = 'pago' THEN bp.valor ELSE 0 END), 0) AS bonus_pago_mes,
-        COALESCE(SUM(CASE WHEN bp.status = 'pendente' THEN bp.valor ELSE 0 END), 0) AS bonus_pendente_mes,
+        COALESCE(c.total_pendente, 0) AS total_pendente,
+        COALESCE(b.bonus_pago_mes, 0) AS bonus_pago_mes,
+        COALESCE(b.bonus_pendente_mes, 0) AS bonus_pendente_mes,
+        COALESCE(b.bonus_pago_mes, 0) + COALESCE(b.bonus_pendente_mes, 0) AS bonus_mes,
         COALESCE((
           SELECT COUNT(DISTINCT cl.id)
           FROM pagamentos p
@@ -2604,16 +2623,10 @@ app.get("/revendedores", verificarToken, async (req, res) => {
             AND p.confirmado_em >= m.inicio
             AND p.confirmado_em < m.fim
             AND cl.revendedor_id = r.id
-        ), 0) AS clientes_ativos_mes,
-        -- Bonus mensal pode ser gerado manualmente (registro pendente) ou pago.
-        -- Para exibir no admin, somamos o que existe no historico do mes atual.
-        COALESCE(SUM(CASE WHEN bp.status IN ('pendente','pago') THEN bp.valor ELSE 0 END), 0) AS bonus_mes
+        ), 0) AS clientes_ativos_mes
       FROM revendedores r
-      LEFT JOIN comissoes c ON c.revendedor_id = r.id
-      LEFT JOIN bonus_pagamentos bp
-        ON bp.revendedor_id = r.id
-       AND bp.mes = date_trunc('month', NOW())::date
-      GROUP BY r.id
+      LEFT JOIN comissao c ON c.revendedor_id = r.id
+      LEFT JOIN bonus b ON b.revendedor_id = r.id
       ORDER BY r.id DESC
       `
     );
