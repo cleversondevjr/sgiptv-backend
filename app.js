@@ -1584,6 +1584,60 @@ app.get("/revendedor/comissoes/:id/comprovante", verificarTokenRevendedor, async
   }
 });
 
+// Listar bonus pagos/pendentes do revendedor (para exibir comprovantes no painel).
+app.get("/revendedor/bonus", verificarTokenRevendedor, async (req, res) => {
+  const rid = req.revendedor.id;
+  try {
+    const r = await db.query(
+      `
+      SELECT id, mes, valor, status, transacao_id,
+             comprovante_nome, comprovante_mime, comprovante_tamanho,
+             criado_em, pago_em
+      FROM bonus_pagamentos
+      WHERE revendedor_id = $1
+      ORDER BY id DESC
+      LIMIT 24
+      `,
+      [rid]
+    );
+    return res.json({ ok: true, bonus: r.rows });
+  } catch (error) {
+    console.error("Erro revendedor/bonus:", error);
+    return res.status(500).json({ error: "Erro ao buscar bonus." });
+  }
+});
+
+// Baixar comprovante de bonus (revendedor).
+app.get("/revendedor/bonus/:id/comprovante", verificarTokenRevendedor, async (req, res) => {
+  const rid = req.revendedor.id;
+  const bid = String(req.params.id || "").trim();
+  if (!bid) return res.status(400).json({ error: "Informe o id do bonus." });
+
+  try {
+    const r = await db.query(
+      `
+      SELECT comprovante_nome, comprovante_mime, comprovante_bytes
+      FROM bonus_pagamentos
+      WHERE id = $1 AND revendedor_id = $2
+      LIMIT 1
+      `,
+      [bid, rid]
+    );
+    if (r.rows.length === 0) return res.status(404).json({ error: "Bonus nao encontrado." });
+    const row = r.rows[0];
+    if (!row.comprovante_bytes) return res.status(404).json({ error: "Comprovante nao encontrado." });
+
+    const filename = String(row.comprovante_nome || `bonus-${bid}.pdf`).replace(/[\r\n]/g, "");
+    const mime = String(row.comprovante_mime || "application/octet-stream");
+    res.setHeader("Content-Type", mime);
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+    return res.send(row.comprovante_bytes);
+  } catch (error) {
+    console.error("Erro ao baixar comprovante bonus (revendedor):", error);
+    return res.status(500).json({ error: "Erro ao baixar comprovante." });
+  }
+});
+
 // Baixar comprovante de comissao (admin).
 app.get("/admin/comissoes/:id/comprovante", verificarToken, async (req, res) => {
   const cid = String(req.params.id || "").trim();
@@ -1610,6 +1664,36 @@ app.get("/admin/comissoes/:id/comprovante", verificarToken, async (req, res) => 
     return res.send(row.comprovante_bytes);
   } catch (error) {
     console.error("Erro ao baixar comprovante comissao (admin):", error);
+    return res.status(500).json({ error: "Erro ao baixar comprovante." });
+  }
+});
+
+// Baixar comprovante de bonus (admin).
+app.get("/admin/bonus/:id/comprovante", verificarToken, async (req, res) => {
+  const bid = String(req.params.id || "").trim();
+  if (!bid) return res.status(400).json({ error: "Informe o id do bonus." });
+
+  try {
+    const r = await db.query(
+      `
+      SELECT comprovante_nome, comprovante_mime, comprovante_bytes
+      FROM bonus_pagamentos
+      WHERE id = $1
+      LIMIT 1
+      `,
+      [bid]
+    );
+    if (r.rows.length === 0) return res.status(404).json({ error: "Bonus nao encontrado." });
+    const row = r.rows[0];
+    if (!row.comprovante_bytes) return res.status(404).json({ error: "Comprovante nao encontrado." });
+
+    const filename = String(row.comprovante_nome || `bonus-${bid}.pdf`).replace(/[\r\n]/g, "");
+    const mime = String(row.comprovante_mime || "application/octet-stream");
+    res.setHeader("Content-Type", mime);
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+    return res.send(row.comprovante_bytes);
+  } catch (error) {
+    console.error("Erro ao baixar comprovante bonus (admin):", error);
     return res.status(500).json({ error: "Erro ao baixar comprovante." });
   }
 });
