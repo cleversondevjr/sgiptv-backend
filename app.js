@@ -2318,7 +2318,7 @@ app.put("/clientes/:id", verificarToken, async (req, res) => {
 
   try {
     let revendedorId = null;
-    const codigo = String(revendedor_codigo || "").trim();
+    const codigo = String(revendedor_codigo || "").trim().toUpperCase();
     if (codigo) {
       const rev = await db.query(
         `
