@@ -2282,9 +2282,12 @@ Painel Admin: ${ADMIN_PANEL_URL}
 app.get("/clientes", verificarToken, async (req, res) => {
   try {
     const result = await db.query(`
-      SELECT *
-      FROM clientes
-      ORDER BY vencimento DESC, id DESC
+      SELECT
+        c.*,
+        r.codigo AS revendedor_codigo
+      FROM clientes c
+      LEFT JOIN revendedores r ON r.id = c.revendedor_id
+      ORDER BY c.vencimento DESC, c.id DESC
     `);
 
     res.json(result.rows);
