@@ -36,7 +36,8 @@ app.use(cors({
     return callback(new Error("Origem nao permitida pelo CORS."));
   }
 }));
-app.use(express.json());
+// Precisamos aumentar o limite pois o admin pode anexar comprovante (base64) ao marcar pagamento.
+app.use(express.json({ limit: "6mb" }));
 
 const requiredEnv = [
   "ACCESS_TOKEN",
