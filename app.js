@@ -1525,6 +1525,9 @@ app.get("/revendedor/comissoes", verificarTokenRevendedor, async (req, res) => {
         c.valor,
         c.status,
         c.transacao_id,
+        c.comprovante_nome,
+        c.comprovante_mime,
+        c.comprovante_tamanho,
         c.criado_em,
         c.pago_em,
         c.pagamento_id,
@@ -1546,6 +1549,38 @@ app.get("/revendedor/comissoes", verificarTokenRevendedor, async (req, res) => {
   } catch (error) {
     console.error("Erro revendedor/comissoes:", error);
     return res.status(500).json({ error: "Erro ao buscar comissoes." });
+  }
+});
+
+// Baixar comprovante de uma comissao (para o revendedor ver no painel).
+app.get("/revendedor/comissoes/:id/comprovante", verificarTokenRevendedor, async (req, res) => {
+  const rid = req.revendedor.id;
+  const cid = String(req.params.id || "").trim();
+  if (!cid) return res.status(400).json({ error: "Informe o id da comissao." });
+
+  try {
+    const r = await db.query(
+      `
+      SELECT comprovante_nome, comprovante_mime, comprovante_bytes
+      FROM comissoes
+      WHERE id = $1 AND revendedor_id = $2
+      LIMIT 1
+      `,
+      [cid, rid]
+    );
+    if (r.rows.length === 0) return res.status(404).json({ error: "Comissao nao encontrada." });
+    const row = r.rows[0];
+    if (!row.comprovante_bytes) return res.status(404).json({ error: "Comprovante nao encontrado." });
+
+    const filename = String(row.comprovante_nome || `comprovante-${cid}.pdf`).replace(/[\r\n]/g, "");
+    const mime = String(row.comprovante_mime || "application/octet-stream");
+
+    res.setHeader("Content-Type", mime);
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+    return res.send(row.comprovante_bytes);
+  } catch (error) {
+    console.error("Erro ao baixar comprovante comissao:", error);
+    return res.status(500).json({ error: "Erro ao baixar comprovante." });
   }
 });
 
@@ -1772,6 +1807,8 @@ db.query(`ALTER TABLE comissoes ADD COLUMN IF NOT EXISTS comprovante_mime TEXT`)
   .catch(() => {});
 db.query(`ALTER TABLE comissoes ADD COLUMN IF NOT EXISTS comprovante_tamanho INTEGER`)
   .catch(() => {});
+db.query(`ALTER TABLE comissoes ADD COLUMN IF NOT EXISTS comprovante_bytes BYTEA`)
+  .catch(() => {});
 
 // Bonus do revendedor (pagamento manual registrado pelo admin).
 db.query(`
@@ -1785,6 +1822,7 @@ db.query(`
     comprovante_nome TEXT,
     comprovante_mime TEXT,
     comprovante_tamanho INTEGER,
+    comprovante_bytes BYTEA,
     criado_em TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     pago_em TIMESTAMPTZ,
     atualizado_em TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -1793,6 +1831,9 @@ db.query(`
 `)
   .then(() => console.log("Tabela bonus_pagamentos OK"))
   .catch(err => console.error("Erro ao garantir tabela bonus_pagamentos:", err));
+
+db.query(`ALTER TABLE bonus_pagamentos ADD COLUMN IF NOT EXISTS comprovante_bytes BYTEA`)
+  .catch(() => {});
 
 // Bases novas/limpas podem nao ter a tabela testes_iptv ainda.
 db.query(`
@@ -2680,11 +2721,12 @@ app.post("/revendedores/:id/comissoes/pagar", verificarToken, async (req, res) =
           comprovante_nome = COALESCE($3::text, comprovante_nome),
           comprovante_mime = COALESCE($4::text, comprovante_mime),
           comprovante_tamanho = COALESCE($5::int, comprovante_tamanho),
+          comprovante_bytes = COALESCE($6::bytea, comprovante_bytes),
           pago_em = NOW(),
           atualizado_em = NOW()
       WHERE revendedor_id = $1 AND status = 'pendente'
       `,
-      [id, transacaoId, anexo ? anexo.filename : null, anexo ? anexo.contentType : null, anexo ? anexo.size : null]
+      [id, transacaoId, anexo ? anexo.filename : null, anexo ? anexo.contentType : null, anexo ? anexo.size : null, anexo ? anexo.content : null]
     );
 
     if (notificar && rev.email) {
@@ -2777,16 +2819,16 @@ app.post("/revendedores/:id/bonus/pagar", verificarToken, async (req, res) => {
       `
       INSERT INTO bonus_pagamentos (
         revendedor_id, mes, valor, status, transacao_id,
-        comprovante_nome, comprovante_mime, comprovante_tamanho,
+        comprovante_nome, comprovante_mime, comprovante_tamanho, comprovante_bytes,
         criado_em, pago_em, atualizado_em
       )
       VALUES (
         $1, date_trunc('month', NOW())::date, $2, 'pago', $3,
-        $4, $5, $6,
+        $4, $5, $6, $7,
         NOW(), NOW(), NOW()
       )
       `,
-      [id, bonusPendente, transacaoId, anexo ? anexo.filename : null, anexo ? anexo.contentType : null, anexo ? anexo.size : null]
+      [id, bonusPendente, transacaoId, anexo ? anexo.filename : null, anexo ? anexo.contentType : null, anexo ? anexo.size : null, anexo ? anexo.content : null]
     );
 
     if (notificar && rev.email) {
