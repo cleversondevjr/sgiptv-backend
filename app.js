@@ -1698,6 +1698,45 @@ app.get("/admin/bonus/:id/comprovante", verificarToken, async (req, res) => {
   }
 });
 
+// Criar um bonus pendente de teste para um revendedor (apenas para homologacao).
+// Ex.: POST /admin/bonus/teste { revendedor_id: 4, valor: 50 }
+app.post("/admin/bonus/teste", verificarToken, async (req, res) => {
+  const rid = req.body && req.body.revendedor_id ? Number(req.body.revendedor_id) : 0;
+  const valor = req.body && req.body.valor != null ? Number(req.body.valor) : 50;
+  if (!rid) return res.status(400).json({ error: "Informe revendedor_id." });
+  if (!Number.isFinite(valor) || valor <= 0) return res.status(400).json({ error: "Informe um valor valido." });
+
+  try {
+    const rev = await db.query(`SELECT id FROM revendedores WHERE id = $1 LIMIT 1`, [rid]);
+    if (rev.rows.length === 0) return res.status(404).json({ error: "Revendedor nao encontrado." });
+
+    // Evita duplicar bonus pendente no mesmo mes.
+    const mes = await db.query(`SELECT date_trunc('month', NOW())::date AS mes`);
+    const m = mes.rows[0].mes;
+    const ja = await db.query(
+      `SELECT id FROM bonus_pagamentos WHERE revendedor_id = $1 AND mes = $2 AND status = 'pendente' LIMIT 1`,
+      [rid, m]
+    );
+    if (ja.rows.length > 0) {
+      return res.json({ ok: true, message: "Ja existe bonus pendente neste mes.", bonus_id: ja.rows[0].id });
+    }
+
+    const ins = await db.query(
+      `
+      INSERT INTO bonus_pagamentos (revendedor_id, mes, valor, status, criado_em, atualizado_em)
+      VALUES ($1, $2, $3, 'pendente', NOW(), NOW())
+      RETURNING id
+      `,
+      [rid, m, valor]
+    );
+
+    return res.json({ ok: true, bonus_id: ins.rows[0].id, mes: m, valor });
+  } catch (error) {
+    console.error("Erro ao criar bonus teste:", error);
+    return res.status(500).json({ error: "Erro ao criar bonus teste." });
+  }
+});
+
 db.query("SELECT NOW()")
   .then(res => console.log("Banco conectado:", res.rows))
   .catch(err => console.error("Erro no banco:", err));
