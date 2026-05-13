@@ -2593,7 +2593,8 @@ app.get("/revendedores", verificarToken, async (req, res) => {
         r.pix_cpf,
         r.status,
         COALESCE(SUM(CASE WHEN c.status = 'pendente' THEN c.valor ELSE 0 END), 0) AS total_pendente,
-        COALESCE(MAX(CASE WHEN bp.status = 'pago' THEN bp.valor ELSE 0 END), 0) AS bonus_pago_mes,
+        COALESCE(SUM(CASE WHEN bp.status = 'pago' THEN bp.valor ELSE 0 END), 0) AS bonus_pago_mes,
+        COALESCE(SUM(CASE WHEN bp.status = 'pendente' THEN bp.valor ELSE 0 END), 0) AS bonus_pendente_mes,
         COALESCE((
           SELECT COUNT(DISTINCT cl.id)
           FROM pagamentos p
@@ -2604,25 +2605,14 @@ app.get("/revendedores", verificarToken, async (req, res) => {
             AND p.confirmado_em < m.fim
             AND cl.revendedor_id = r.id
         ), 0) AS clientes_ativos_mes,
-        CASE
-          WHEN COALESCE((
-            SELECT COUNT(DISTINCT cl2.id)
-            FROM pagamentos p2
-            JOIN clientes cl2 ON cl2.usuario = p2.cliente_usuario
-            JOIN mes m2 ON TRUE
-            WHERE p2.status = 'confirmado'
-              AND p2.confirmado_em >= m2.inicio
-              AND p2.confirmado_em < m2.fim
-              AND cl2.revendedor_id = r.id
-          ), 0) > 10 THEN 50
-          ELSE 0
-        END AS bonus_mes
+        -- Bonus mensal pode ser gerado manualmente (registro pendente) ou pago.
+        -- Para exibir no admin, somamos o que existe no historico do mes atual.
+        COALESCE(SUM(CASE WHEN bp.status IN ('pendente','pago') THEN bp.valor ELSE 0 END), 0) AS bonus_mes
       FROM revendedores r
       LEFT JOIN comissoes c ON c.revendedor_id = r.id
       LEFT JOIN bonus_pagamentos bp
         ON bp.revendedor_id = r.id
        AND bp.mes = date_trunc('month', NOW())::date
-       AND bp.status = 'pago'
       GROUP BY r.id
       ORDER BY r.id DESC
       `
@@ -2631,7 +2621,7 @@ app.get("/revendedores", verificarToken, async (req, res) => {
     const revendedores = result.rows.map(r => {
       const bonusMes = Number(r.bonus_mes) || 0;
       const bonusPago = Number(r.bonus_pago_mes) || 0;
-      const bonusPendente = Math.max(0, bonusMes - bonusPago);
+      const bonusPendente = Number(r.bonus_pendente_mes) || Math.max(0, bonusMes - bonusPago);
       return { ...r, bonus_pago_mes: bonusPago, bonus_pendente_mes: bonusPendente };
     });
 
