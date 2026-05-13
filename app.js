@@ -468,7 +468,7 @@ function criarTransporterEmail() {
   if (brevoKey) {
     // Fallback via HTTP (porta 443), evita timeout de SMTP em alguns hosts.
     return {
-      async sendMail({ from, to, subject, text, html }) {
+      async sendMail({ from, to, subject, text, html, attachments }) {
         const baseFrom = String(from || process.env.EMAIL_FROM || "").trim();
         const fromEmail = extrairEmailFrom(baseFrom) || null;
         const fromName =
@@ -488,7 +488,22 @@ function criarTransporterEmail() {
             .map(email => ({ email })),
           subject,
           textContent: text || undefined,
-          htmlContent: html || undefined
+          htmlContent: html || undefined,
+          ...(Array.isArray(attachments) && attachments.length
+            ? {
+              attachment: attachments
+                .map(a => {
+                  if (!a) return null;
+                  const name = String(a.filename || a.name || "comprovante").trim();
+                  let content = "";
+                  if (Buffer.isBuffer(a.content)) content = a.content.toString("base64");
+                  else if (typeof a.content === "string") content = a.content;
+                  if (!content) return null;
+                  return { name, content };
+                })
+                .filter(Boolean)
+            }
+            : {})
         };
 
         const res = await fetch("https://api.brevo.com/v3/smtp/email", {
@@ -669,10 +684,17 @@ function normalizarAnexoComprovante(comprovante) {
   if (!comprovante || typeof comprovante !== "object") return null;
 
   const name = String(comprovante.name || "comprovante").trim().slice(0, 120);
-  const mime = String(comprovante.mime || "").trim().slice(0, 120);
+  let mime = String(comprovante.mime || "").trim().slice(0, 120);
   const base64 = String(comprovante.base64 || "").trim();
 
-  if (!mime || !base64) return null;
+  if (!base64) return null;
+  if (!mime) {
+    const lower = name.toLowerCase();
+    if (lower.endsWith(".pdf")) mime = "application/pdf";
+    else if (lower.endsWith(".png")) mime = "image/png";
+    else if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) mime = "image/jpeg";
+    else mime = "application/octet-stream";
+  }
 
   // Limite simples para evitar payloads gigantes (2MB base64 aprox 1.5MB bin).
   if (base64.length > 2_800_000) return null;
@@ -690,7 +712,8 @@ function normalizarAnexoComprovante(comprovante) {
   return {
     filename: safeName || "comprovante",
     content: buf,
-    contentType: mime
+    contentType: mime,
+    size: buf.length
   };
 }
 
@@ -1730,6 +1753,9 @@ db.query(`
     valor NUMERIC(10, 2) NOT NULL,
     status TEXT NOT NULL DEFAULT 'pendente',
     transacao_id TEXT,
+    comprovante_nome TEXT,
+    comprovante_mime TEXT,
+    comprovante_tamanho INTEGER,
     criado_em TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     pago_em TIMESTAMPTZ,
     atualizado_em TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -1740,6 +1766,13 @@ db.query(`
   .then(() => console.log("Tabela comissoes OK"))
   .catch(err => console.error("Erro ao garantir tabela comissoes:", err));
 
+db.query(`ALTER TABLE comissoes ADD COLUMN IF NOT EXISTS comprovante_nome TEXT`)
+  .catch(() => {});
+db.query(`ALTER TABLE comissoes ADD COLUMN IF NOT EXISTS comprovante_mime TEXT`)
+  .catch(() => {});
+db.query(`ALTER TABLE comissoes ADD COLUMN IF NOT EXISTS comprovante_tamanho INTEGER`)
+  .catch(() => {});
+
 // Bonus do revendedor (pagamento manual registrado pelo admin).
 db.query(`
   CREATE TABLE IF NOT EXISTS bonus_pagamentos (
@@ -1749,6 +1782,9 @@ db.query(`
     valor NUMERIC(10, 2) NOT NULL,
     status TEXT NOT NULL DEFAULT 'pendente',
     transacao_id TEXT,
+    comprovante_nome TEXT,
+    comprovante_mime TEXT,
+    comprovante_tamanho INTEGER,
     criado_em TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     pago_em TIMESTAMPTZ,
     atualizado_em TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -2562,6 +2598,48 @@ app.put("/pagamentos/:id/confirmar", verificarToken, async (req, res) => {
   }
 });
 
+app.get("/revendedores/:id/historico", verificarToken, async (req, res) => {
+  const id = String(req.params.id || "").trim();
+  if (!id) return res.status(400).json({ error: "Informe o id do revendedor." });
+
+  try {
+    const [comRes, bonusRes] = await Promise.all([
+      db.query(
+        `
+        SELECT
+          c.id, c.tipo, c.valor, c.status, c.transacao_id,
+          c.comprovante_nome, c.comprovante_mime, c.comprovante_tamanho,
+          c.criado_em, c.pago_em,
+          cl.usuario AS cliente_usuario, cl.nome AS cliente_nome
+        FROM comissoes c
+        JOIN clientes cl ON cl.id = c.cliente_id
+        WHERE c.revendedor_id = $1
+        ORDER BY c.id DESC
+        LIMIT 50
+        `,
+        [id]
+      ),
+      db.query(
+        `
+        SELECT id, mes, valor, status, transacao_id,
+               comprovante_nome, comprovante_mime, comprovante_tamanho,
+               criado_em, pago_em
+        FROM bonus_pagamentos
+        WHERE revendedor_id = $1
+        ORDER BY id DESC
+        LIMIT 24
+        `,
+        [id]
+      )
+    ]);
+
+    return res.json({ ok: true, comissoes: comRes.rows, bonus: bonusRes.rows });
+  } catch (error) {
+    console.error("Erro ao buscar historico do revendedor:", error);
+    return res.status(500).json({ error: "Erro ao buscar historico do revendedor." });
+  }
+});
+
 // Marcar comissoes como pagas (fluxo manual: admin faz o PIX e registra o comprovante).
 app.post("/revendedores/:id/comissoes/pagar", verificarToken, async (req, res) => {
   const id = String(req.params.id || "").trim();
@@ -2589,16 +2667,21 @@ app.post("/revendedores/:id/comissoes/pagar", verificarToken, async (req, res) =
     const qtd = Number(pend.rows[0]?.qtd || 0);
     if (qtd <= 0) return res.json({ ok: true, message: "Sem comissoes pendentes.", total: 0, qtd: 0 });
 
+    const anexo = normalizarAnexoComprovante(comprovante);
+
     await db.query(
       `
       UPDATE comissoes
       SET status = 'pago',
           transacao_id = COALESCE($2::text, transacao_id),
+          comprovante_nome = COALESCE($3::text, comprovante_nome),
+          comprovante_mime = COALESCE($4::text, comprovante_mime),
+          comprovante_tamanho = COALESCE($5::int, comprovante_tamanho),
           pago_em = NOW(),
           atualizado_em = NOW()
       WHERE revendedor_id = $1 AND status = 'pendente'
       `,
-      [id, transacaoId]
+      [id, transacaoId, anexo ? anexo.filename : null, anexo ? anexo.contentType : null, anexo ? anexo.size : null]
     );
 
     if (notificar && rev.email) {
@@ -2614,7 +2697,6 @@ app.post("/revendedores/:id/comissoes/pagar", verificarToken, async (req, res) =
         "",
         "Pagamento registrado no painel Admin."
       ].filter(Boolean).join("\n");
-      const anexo = normalizarAnexoComprovante(comprovante);
       await enviarEmailPara(rev.email, {
         assunto,
         text,
@@ -2686,12 +2768,22 @@ app.post("/revendedores/:id/bonus/pagar", verificarToken, async (req, res) => {
       return res.json({ ok: true, message: "Sem bonus pendente no mes.", valor: 0 });
     }
 
+    const anexo = normalizarAnexoComprovante(comprovante);
+
     await db.query(
       `
-      INSERT INTO bonus_pagamentos (revendedor_id, mes, valor, status, transacao_id, criado_em, pago_em, atualizado_em)
-      VALUES ($1, date_trunc('month', NOW())::date, $2, 'pago', $3, NOW(), NOW(), NOW())
+      INSERT INTO bonus_pagamentos (
+        revendedor_id, mes, valor, status, transacao_id,
+        comprovante_nome, comprovante_mime, comprovante_tamanho,
+        criado_em, pago_em, atualizado_em
+      )
+      VALUES (
+        $1, date_trunc('month', NOW())::date, $2, 'pago', $3,
+        $4, $5, $6,
+        NOW(), NOW(), NOW()
+      )
       `,
-      [id, bonusPendente, transacaoId]
+      [id, bonusPendente, transacaoId, anexo ? anexo.filename : null, anexo ? anexo.contentType : null, anexo ? anexo.size : null]
     );
 
     if (notificar && rev.email) {
@@ -2706,7 +2798,6 @@ app.post("/revendedores/:id/bonus/pagar", verificarToken, async (req, res) => {
         "",
         "Pagamento registrado no painel Admin."
       ].filter(Boolean).join("\n");
-      const anexo = normalizarAnexoComprovante(comprovante);
       await enviarEmailPara(rev.email, {
         assunto,
         text,
