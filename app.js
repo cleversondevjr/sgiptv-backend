@@ -2787,6 +2787,55 @@ app.post("/revendedores/:id/comissoes/pagar", verificarToken, async (req, res) =
   }
 });
 
+// Reanexar comprovante em comissoes ja pagas (quando o comprovante antigo nao foi salvo em bytes).
+// Atualiza todas as comissoes do revendedor com status='pago' e (opcional) transacao_id informado.
+app.post("/revendedores/:id/comissoes/anexar", verificarToken, async (req, res) => {
+  const id = String(req.params.id || "").trim();
+  const transacaoId = req.body && req.body.transacao_id ? String(req.body.transacao_id).trim() : null;
+  const comprovante = req.body && req.body.comprovante ? req.body.comprovante : null;
+
+  if (!id) return res.status(400).json({ error: "Informe o id do revendedor." });
+
+  try {
+    const anexo = normalizarAnexoComprovante(comprovante);
+    if (!anexo) return res.status(400).json({ error: "Informe um comprovante valido (PDF/PNG/JPG ate 2MB)." });
+
+    const whereTransacao = transacaoId ? "AND (transacao_id = $2::text OR $2::text = '')" : "";
+    const params = transacaoId
+      ? [id, transacaoId, anexo.filename, anexo.contentType, anexo.size, anexo.content]
+      : [id, anexo.filename, anexo.contentType, anexo.size, anexo.content];
+
+    const q = transacaoId
+      ? `
+        UPDATE comissoes
+        SET comprovante_nome = $3::text,
+            comprovante_mime = $4::text,
+            comprovante_tamanho = $5::int,
+            comprovante_bytes = $6::bytea,
+            atualizado_em = NOW()
+        WHERE revendedor_id = $1
+          AND status = 'pago'
+          ${whereTransacao}
+      `
+      : `
+        UPDATE comissoes
+        SET comprovante_nome = $2::text,
+            comprovante_mime = $3::text,
+            comprovante_tamanho = $4::int,
+            comprovante_bytes = $5::bytea,
+            atualizado_em = NOW()
+        WHERE revendedor_id = $1
+          AND status = 'pago'
+      `;
+
+    const r = await db.query(q, params);
+    return res.json({ ok: true, atualizadas: r.rowCount || 0 });
+  } catch (error) {
+    console.error("Erro ao reanexar comprovante de comissoes:", error);
+    return res.status(500).json({ error: "Erro ao anexar comprovante." });
+  }
+});
+
 // Marcar bonus do mes como pago (fluxo manual: admin faz o PIX e registra o comprovante).
 app.post("/revendedores/:id/bonus/pagar", verificarToken, async (req, res) => {
   const id = String(req.params.id || "").trim();
