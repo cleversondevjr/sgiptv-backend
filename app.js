@@ -1677,6 +1677,24 @@ db.query(`
   .then(() => console.log("Tabela comissoes OK"))
   .catch(err => console.error("Erro ao garantir tabela comissoes:", err));
 
+// Bonus do revendedor (pagamento manual registrado pelo admin).
+db.query(`
+  CREATE TABLE IF NOT EXISTS bonus_pagamentos (
+    id BIGSERIAL PRIMARY KEY,
+    revendedor_id BIGINT NOT NULL REFERENCES revendedores(id) ON DELETE CASCADE,
+    mes DATE NOT NULL,
+    valor NUMERIC(10, 2) NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pendente',
+    transacao_id TEXT,
+    criado_em TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    pago_em TIMESTAMPTZ,
+    atualizado_em TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT bonus_pagamentos_status_check CHECK (status IN ('pendente', 'pago', 'falhou'))
+  )
+`)
+  .then(() => console.log("Tabela bonus_pagamentos OK"))
+  .catch(err => console.error("Erro ao garantir tabela bonus_pagamentos:", err));
+
 // Bases novas/limpas podem nao ter a tabela testes_iptv ainda.
 db.query(`
   CREATE TABLE IF NOT EXISTS testes_iptv (
@@ -2274,6 +2292,7 @@ app.get("/revendedores", verificarToken, async (req, res) => {
         r.pix_cpf,
         r.status,
         COALESCE(SUM(CASE WHEN c.status = 'pendente' THEN c.valor ELSE 0 END), 0) AS total_pendente,
+        COALESCE(MAX(CASE WHEN bp.status = 'pago' THEN bp.valor ELSE 0 END), 0) AS bonus_pago_mes,
         COALESCE((
           SELECT COUNT(DISTINCT cl.id)
           FROM pagamentos p
@@ -2299,12 +2318,23 @@ app.get("/revendedores", verificarToken, async (req, res) => {
         END AS bonus_mes
       FROM revendedores r
       LEFT JOIN comissoes c ON c.revendedor_id = r.id
+      LEFT JOIN bonus_pagamentos bp
+        ON bp.revendedor_id = r.id
+       AND bp.mes = date_trunc('month', NOW())::date
+       AND bp.status = 'pago'
       GROUP BY r.id
       ORDER BY r.id DESC
       `
     );
 
-    res.json({ ok: true, revendedores: result.rows });
+    const revendedores = result.rows.map(r => {
+      const bonusMes = Number(r.bonus_mes) || 0;
+      const bonusPago = Number(r.bonus_pago_mes) || 0;
+      const bonusPendente = Math.max(0, bonusMes - bonusPago);
+      return { ...r, bonus_pago_mes: bonusPago, bonus_pendente_mes: bonusPendente };
+    });
+
+    res.json({ ok: true, revendedores });
   } catch (error) {
     console.error("Erro ao buscar revendedores:", error);
     res.status(500).json({ error: "Erro ao buscar revendedores." });
@@ -2466,6 +2496,111 @@ app.put("/pagamentos/:id/confirmar", verificarToken, async (req, res) => {
   } catch (error) {
     console.error("Erro ao confirmar pagamento:", error);
     res.status(500).json({ error: "Erro ao confirmar pagamento" });
+  }
+});
+
+// Marcar comissoes como pagas (fluxo manual: admin faz o PIX e registra o comprovante).
+app.post("/revendedores/:id/comissoes/pagar", verificarToken, async (req, res) => {
+  const id = String(req.params.id || "").trim();
+  const transacaoId = req.body && req.body.transacao_id ? String(req.body.transacao_id).trim() : null;
+
+  if (!id) return res.status(400).json({ error: "Informe o id do revendedor." });
+
+  try {
+    const pend = await db.query(
+      `
+      SELECT COALESCE(SUM(valor), 0) AS total, COUNT(*) AS qtd
+      FROM comissoes
+      WHERE revendedor_id = $1 AND status = 'pendente'
+      `,
+      [id]
+    );
+
+    const total = Number(pend.rows[0]?.total || 0);
+    const qtd = Number(pend.rows[0]?.qtd || 0);
+    if (qtd <= 0) return res.json({ ok: true, message: "Sem comissoes pendentes.", total: 0, qtd: 0 });
+
+    await db.query(
+      `
+      UPDATE comissoes
+      SET status = 'pago',
+          transacao_id = COALESCE($2::text, transacao_id),
+          pago_em = NOW(),
+          atualizado_em = NOW()
+      WHERE revendedor_id = $1 AND status = 'pendente'
+      `,
+      [id, transacaoId]
+    );
+
+    return res.json({ ok: true, total, qtd });
+  } catch (error) {
+    console.error("Erro ao marcar comissoes como pagas:", error);
+    return res.status(500).json({ error: "Erro ao marcar comissoes como pagas." });
+  }
+});
+
+// Marcar bonus do mes como pago (fluxo manual: admin faz o PIX e registra o comprovante).
+app.post("/revendedores/:id/bonus/pagar", verificarToken, async (req, res) => {
+  const id = String(req.params.id || "").trim();
+  const transacaoId = req.body && req.body.transacao_id ? String(req.body.transacao_id).trim() : null;
+
+  if (!id) return res.status(400).json({ error: "Informe o id do revendedor." });
+
+  try {
+    // Recalcula bonus do mes (mesma regra da listagem).
+    const bonusRes = await db.query(
+      `
+      WITH mes AS (
+        SELECT date_trunc('month', NOW()) AS inicio,
+               date_trunc('month', NOW()) + interval '1 month' AS fim
+      )
+      SELECT
+        CASE
+          WHEN COALESCE((
+            SELECT COUNT(DISTINCT cl2.id)
+            FROM pagamentos p2
+            JOIN clientes cl2 ON cl2.usuario = p2.cliente_usuario
+            JOIN mes m2 ON TRUE
+            WHERE p2.status = 'confirmado'
+              AND p2.confirmado_em >= m2.inicio
+              AND p2.confirmado_em < m2.fim
+              AND cl2.revendedor_id = $1
+          ), 0) > 10 THEN 50
+          ELSE 0
+        END AS bonus_mes,
+        COALESCE((
+          SELECT bp.valor
+          FROM bonus_pagamentos bp
+          WHERE bp.revendedor_id = $1
+            AND bp.mes = date_trunc('month', NOW())::date
+            AND bp.status = 'pago'
+          ORDER BY bp.id DESC
+          LIMIT 1
+        ), 0) AS bonus_pago_mes
+      `,
+      [id]
+    );
+
+    const bonusMes = Number(bonusRes.rows[0]?.bonus_mes || 0);
+    const bonusPago = Number(bonusRes.rows[0]?.bonus_pago_mes || 0);
+    const bonusPendente = Math.max(0, bonusMes - bonusPago);
+
+    if (bonusPendente <= 0) {
+      return res.json({ ok: true, message: "Sem bonus pendente no mes.", valor: 0 });
+    }
+
+    await db.query(
+      `
+      INSERT INTO bonus_pagamentos (revendedor_id, mes, valor, status, transacao_id, criado_em, pago_em, atualizado_em)
+      VALUES ($1, date_trunc('month', NOW())::date, $2, 'pago', $3, NOW(), NOW(), NOW())
+      `,
+      [id, bonusPendente, transacaoId]
+    );
+
+    return res.json({ ok: true, valor: bonusPendente });
+  } catch (error) {
+    console.error("Erro ao marcar bonus como pago:", error);
+    return res.status(500).json({ error: "Erro ao marcar bonus como pago." });
   }
 });
 
