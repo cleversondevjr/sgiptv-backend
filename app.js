@@ -1985,6 +1985,11 @@ db.query(`
   .then(() => console.log("Tabela bonus_pagamentos OK"))
   .catch(err => console.error("Erro ao garantir tabela bonus_pagamentos:", err));
 
+// Migra colunas em bases antigas (tabela criada antes de anexos/historico).
+db.query(`ALTER TABLE bonus_pagamentos ADD COLUMN IF NOT EXISTS transacao_id TEXT`).catch(() => {});
+db.query(`ALTER TABLE bonus_pagamentos ADD COLUMN IF NOT EXISTS comprovante_nome TEXT`).catch(() => {});
+db.query(`ALTER TABLE bonus_pagamentos ADD COLUMN IF NOT EXISTS comprovante_mime TEXT`).catch(() => {});
+db.query(`ALTER TABLE bonus_pagamentos ADD COLUMN IF NOT EXISTS comprovante_tamanho INTEGER`).catch(() => {});
 db.query(`ALTER TABLE bonus_pagamentos ADD COLUMN IF NOT EXISTS comprovante_bytes BYTEA`)
   .catch(() => {});
 
