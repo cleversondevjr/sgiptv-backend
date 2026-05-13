@@ -1584,6 +1584,36 @@ app.get("/revendedor/comissoes/:id/comprovante", verificarTokenRevendedor, async
   }
 });
 
+// Baixar comprovante de comissao (admin).
+app.get("/admin/comissoes/:id/comprovante", verificarToken, async (req, res) => {
+  const cid = String(req.params.id || "").trim();
+  if (!cid) return res.status(400).json({ error: "Informe o id da comissao." });
+
+  try {
+    const r = await db.query(
+      `
+      SELECT comprovante_nome, comprovante_mime, comprovante_bytes
+      FROM comissoes
+      WHERE id = $1
+      LIMIT 1
+      `,
+      [cid]
+    );
+    if (r.rows.length === 0) return res.status(404).json({ error: "Comissao nao encontrada." });
+    const row = r.rows[0];
+    if (!row.comprovante_bytes) return res.status(404).json({ error: "Comprovante nao encontrado." });
+
+    const filename = String(row.comprovante_nome || `comprovante-${cid}.pdf`).replace(/[\r\n]/g, "");
+    const mime = String(row.comprovante_mime || "application/octet-stream");
+    res.setHeader("Content-Type", mime);
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+    return res.send(row.comprovante_bytes);
+  } catch (error) {
+    console.error("Erro ao baixar comprovante comissao (admin):", error);
+    return res.status(500).json({ error: "Erro ao baixar comprovante." });
+  }
+});
+
 db.query("SELECT NOW()")
   .then(res => console.log("Banco conectado:", res.rows))
   .catch(err => console.error("Erro no banco:", err));
