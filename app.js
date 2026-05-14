@@ -2981,43 +2981,26 @@ app.post("/revendedores/:id/bonus/pagar", verificarToken, async (req, res) => {
     if (revRes.rows.length === 0) return res.status(404).json({ error: "Revendedor nao encontrado." });
     const rev = revRes.rows[0];
 
-    // Recalcula bonus do mes (mesma regra da listagem).
+    // Bonus do mes: preferimos o que esta registrado em bonus_pagamentos (pendente/pago).
+    // (A regra automatica de >10 vendas pode ser usada no futuro para criar o registro pendente automaticamente.)
     const bonusRes = await db.query(
       `
       WITH mes AS (
-        SELECT date_trunc('month', NOW()) AS inicio,
-               date_trunc('month', NOW()) + interval '1 month' AS fim
+        SELECT date_trunc('month', NOW())::date AS mes_date
       )
       SELECT
-        CASE
-          WHEN COALESCE((
-            SELECT COUNT(DISTINCT cl2.id)
-            FROM pagamentos p2
-            JOIN clientes cl2 ON cl2.usuario = p2.cliente_usuario
-            JOIN mes m2 ON TRUE
-            WHERE p2.status = 'confirmado'
-              AND p2.confirmado_em >= m2.inicio
-              AND p2.confirmado_em < m2.fim
-              AND cl2.revendedor_id = $1
-          ), 0) > 10 THEN 50
-          ELSE 0
-        END AS bonus_mes,
-        COALESCE((
-          SELECT bp.valor
-          FROM bonus_pagamentos bp
-          WHERE bp.revendedor_id = $1
-            AND bp.mes = date_trunc('month', NOW())::date
-            AND bp.status = 'pago'
-          ORDER BY bp.id DESC
-          LIMIT 1
-        ), 0) AS bonus_pago_mes
+        COALESCE(SUM(CASE WHEN bp.status = 'pendente' THEN bp.valor ELSE 0 END), 0) AS bonus_pendente_mes,
+        COALESCE(SUM(CASE WHEN bp.status = 'pago' THEN bp.valor ELSE 0 END), 0) AS bonus_pago_mes
+      FROM bonus_pagamentos bp
+      JOIN mes m ON TRUE
+      WHERE bp.revendedor_id = $1
+        AND bp.mes = m.mes_date
       `,
       [id]
     );
 
-    const bonusMes = Number(bonusRes.rows[0]?.bonus_mes || 0);
+    const bonusPendente = Number(bonusRes.rows[0]?.bonus_pendente_mes || 0);
     const bonusPago = Number(bonusRes.rows[0]?.bonus_pago_mes || 0);
-    const bonusPendente = Math.max(0, bonusMes - bonusPago);
 
     if (bonusPendente <= 0) {
       return res.json({ ok: true, message: "Sem bonus pendente no mes.", valor: 0 });
@@ -3025,20 +3008,23 @@ app.post("/revendedores/:id/bonus/pagar", verificarToken, async (req, res) => {
 
     const anexo = normalizarAnexoComprovante(comprovante);
 
+    // Marca todos os bonus pendentes do mes como pago e anexa o comprovante/ID (mesma ref para o lote).
     await db.query(
       `
-      INSERT INTO bonus_pagamentos (
-        revendedor_id, mes, valor, status, transacao_id,
-        comprovante_nome, comprovante_mime, comprovante_tamanho, comprovante_bytes,
-        criado_em, pago_em, atualizado_em
-      )
-      VALUES (
-        $1, date_trunc('month', NOW())::date, $2, 'pago', $3,
-        $4, $5, $6, $7,
-        NOW(), NOW(), NOW()
-      )
+      UPDATE bonus_pagamentos
+      SET status = 'pago',
+          transacao_id = COALESCE($2::text, transacao_id),
+          comprovante_nome = COALESCE($3::text, comprovante_nome),
+          comprovante_mime = COALESCE($4::text, comprovante_mime),
+          comprovante_tamanho = COALESCE($5::int, comprovante_tamanho),
+          comprovante_bytes = COALESCE($6::bytea, comprovante_bytes),
+          pago_em = COALESCE(pago_em, NOW()),
+          atualizado_em = NOW()
+      WHERE revendedor_id = $1
+        AND mes = date_trunc('month', NOW())::date
+        AND status = 'pendente'
       `,
-      [id, bonusPendente, transacaoId, anexo ? anexo.filename : null, anexo ? anexo.contentType : null, anexo ? anexo.size : null, anexo ? anexo.content : null]
+      [id, transacaoId, anexo ? anexo.filename : null, anexo ? anexo.contentType : null, anexo ? anexo.size : null, anexo ? anexo.content : null]
     );
 
     if (notificar && rev.email) {
