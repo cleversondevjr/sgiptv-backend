@@ -1010,9 +1010,11 @@ function calcularValorComissaoPrimeiraVenda({ plano = "", dias = 0, conexoes = 1
   // - Mensal 1 tela: R$ 10,00
   // - Mensal 2 telas: R$ 15,00
   // - 3 meses 1 tela: R$ 30,00
+  // - 3 meses 2 telas: R$ 45,00
   const ehTresMeses = p.includes("3 mes") || d >= 90;
   const ehMensal = p.includes("mensal") || d === 30;
 
+  if (ehTresMeses && c >= 2) return 45;
   if (ehTresMeses) return 30;
   if (ehMensal && c >= 2) return 15;
   if (ehMensal) return 10;
@@ -1495,8 +1497,8 @@ app.get("/revendedor/me", verificarTokenRevendedor, async (req, res) => {
     );
 
     const clientesAtivosMes = Number(stats.rows[0]?.clientes_ativos_mes || 0);
-    // Bonus: mais de 10 vendas ativas no mes => R$ 50,00
-    const bonusMes = clientesAtivosMes > 10 ? 50 : 0;
+    // Bonus: pelo menos 10 vendas ativas no mes => R$ 50,00
+    const bonusMes = clientesAtivosMes >= 10 ? 50 : 0;
 
     return res.json({
       ok: true,
