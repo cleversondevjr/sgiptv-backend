@@ -228,6 +228,21 @@ function obterPlano(planoId, valorLegado) {
   return PLANOS[id] || null;
 }
 
+function normalizarNomePlanoParaCliente(pagamento) {
+  const planoRaw = String(pagamento?.plano || "").trim();
+  // Alguns fluxos antigos gravavam "C-<usuario>" em vez do nome do plano.
+  // Nesses casos, derivamos o nome pelo valor (mapeamento legado).
+  if (/^c-\d+$/i.test(planoRaw)) {
+    const p = obterPlano(null, pagamento?.valor);
+    return String(p?.nome || "MENSAL").trim();
+  }
+  // Se for "TESTE PIX - X", tira o prefixo para usar o nome real.
+  if (/^teste pix\s*-\s*/i.test(planoRaw)) {
+    return planoRaw.replace(/^teste pix\s*-\s*/i, "").trim() || planoRaw;
+  }
+  return planoRaw || "MENSAL";
+}
+
 function adicionarTempo(data, quantidade, unidade) {
   const resultado = new Date(data);
 
@@ -1130,6 +1145,7 @@ async function aplicarRenovacaoCliente(pagamento) {
 
   const dias = diasPlano(pagamento);
   const conexoes = conexoesDoPlano(pagamento.plano);
+  const nomePlano = normalizarNomePlanoParaCliente(pagamento);
 
   // Pega vencimento atual para somar a partir do maior entre vencimento e agora.
   const clienteAtual = await db.query(
@@ -1168,7 +1184,7 @@ async function aplicarRenovacaoCliente(pagamento) {
     `,
     [
       c.id,
-      String(pagamento.plano || "").trim() || "MENSAL",
+      nomePlano,
       conexoes,
       novoVenc.toISOString(),
       email,
@@ -2360,6 +2376,29 @@ app.post("/admin/pix/importar", verificarToken, async (req, res) => {
       await notificarVendaAdmin({ tipo: "Pix recebido (importado)", pagamento: salvo, origem: "pix_import", telegramTipo: "pix" });
       try {
         await db.query("UPDATE pagamentos SET notificado_em = NOW() WHERE payment_id = $1", [paymentId]);
+      } catch {}
+    }
+
+    // Se confirmado, aplica renovacao/comissao e limpa teste (se existir).
+    if (salvo?.status === "confirmado") {
+      try {
+        await aplicarRenovacaoCliente(salvo);
+      } catch (e2) {
+        console.error("Erro ao aplicar renovacao (pix_import):", e2?.message || e2);
+      }
+
+      try {
+        await garantirComissaoDoPagamentoConfirmado(salvo);
+      } catch (e2) {
+        console.error("Erro ao garantir comissao (pix_import):", e2?.message || e2);
+      }
+
+      try {
+        await limparTesteIptvDoCliente({
+          usuario: salvo.cliente_usuario,
+          email: salvo.email,
+          telefone: salvo.telefone
+        });
       } catch {}
     }
 
