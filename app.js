@@ -626,6 +626,9 @@ async function enviarWhatsappAvisoAdmin(texto) {
       return false;
     }
 
+    // CallMeBot responde com texto simples. Logamos para auditoria/debug.
+    const respText = await res.text().catch(() => "");
+    console.log("WhatsApp admin enviado OK:", respText || "(sem corpo)");
     return true;
   } catch (error) {
     console.error("Erro ao enviar WhatsApp admin:", error);
@@ -3556,6 +3559,25 @@ app.post("/admin/email/teste", verificarToken, async (req, res) => {
   } catch (error) {
     console.error("Erro ao testar email:", error);
     return res.status(500).json({ error: "Erro ao testar email." });
+  }
+});
+
+app.post("/admin/whatsapp/teste", verificarToken, async (req, res) => {
+  try {
+    const { texto } = req.body || {};
+    const msg = String(texto || "Teste WhatsApp - SG IPTV").trim();
+
+    const ok = await enviarWhatsappAvisoAdmin(msg);
+    if (!ok) {
+      return res.status(400).json({
+        error: "WhatsApp nao enviado. Verifique ADMIN_WHATSAPP_APIKEY e ADMIN_WHATSAPP_NUMBER."
+      });
+    }
+
+    return res.json({ ok: true });
+  } catch (error) {
+    console.error("Erro ao testar WhatsApp:", error);
+    return res.status(500).json({ error: "Erro ao testar WhatsApp." });
   }
 });
 
