@@ -973,15 +973,20 @@ async function confirmarPagamentoRecebido(pagamento, origem = "webhook") {
 
   const confirmado = result.rows[0] || pagamento;
 
+  const isTestePix = /^teste pix\s*-\s*/i.test(String(confirmado.plano || "").trim());
+
   // Atualiza vencimento do cliente (renovacao) quando tivermos algum identificador do cliente.
   try {
-    await aplicarRenovacaoCliente(confirmado);
-    await limparTesteIptvDoCliente({
-      usuario: confirmado.cliente_usuario,
-      email: confirmado.email,
-      telefone: confirmado.telefone
-    });
-    await garantirComissaoDoPagamentoConfirmado(confirmado);
+    // PIX de teste: confirma e notifica, mas nao renova cliente, nao limpa teste IPTV e nao gera comissao.
+    if (!isTestePix) {
+      await aplicarRenovacaoCliente(confirmado);
+      await limparTesteIptvDoCliente({
+        usuario: confirmado.cliente_usuario,
+        email: confirmado.email,
+        telefone: confirmado.telefone
+      });
+      await garantirComissaoDoPagamentoConfirmado(confirmado);
+    }
   } catch (e) {
     console.error("Erro ao aplicar renovacao no cliente (continuando):", e);
   }
@@ -1002,15 +1007,20 @@ async function confirmarPagamentoRecebido(pagamento, origem = "webhook") {
 async function processarPagamentoConfirmado(confirmado, origem = "webhook") {
   if (!confirmado || confirmado.status !== "confirmado") return confirmado;
 
+  const isTestePix = /^teste pix\s*-\s*/i.test(String(confirmado.plano || "").trim());
+
   // Renovacao / limpeza / comissao
   try {
-    await aplicarRenovacaoCliente(confirmado);
-    await limparTesteIptvDoCliente({
-      usuario: confirmado.cliente_usuario,
-      email: confirmado.email,
-      telefone: confirmado.telefone
-    });
-    await garantirComissaoDoPagamentoConfirmado(confirmado);
+    // PIX de teste: confirma e notifica, mas nao renova cliente, nao limpa teste IPTV e nao gera comissao.
+    if (!isTestePix) {
+      await aplicarRenovacaoCliente(confirmado);
+      await limparTesteIptvDoCliente({
+        usuario: confirmado.cliente_usuario,
+        email: confirmado.email,
+        telefone: confirmado.telefone
+      });
+      await garantirComissaoDoPagamentoConfirmado(confirmado);
+    }
   } catch (e) {
     console.error("Erro ao aplicar renovacao no cliente (continuando):", e);
   }
