@@ -998,6 +998,37 @@ async function confirmarPagamentoRecebido(pagamento, origem = "webhook") {
   return confirmado;
 }
 
+// Garante efeitos colaterais de um pagamento confirmado (mesmo que ele ja tenha sido inserido como "confirmado").
+async function processarPagamentoConfirmado(confirmado, origem = "webhook") {
+  if (!confirmado || confirmado.status !== "confirmado") return confirmado;
+
+  // Renovacao / limpeza / comissao
+  try {
+    await aplicarRenovacaoCliente(confirmado);
+    await limparTesteIptvDoCliente({
+      usuario: confirmado.cliente_usuario,
+      email: confirmado.email,
+      telefone: confirmado.telefone
+    });
+    await garantirComissaoDoPagamentoConfirmado(confirmado);
+  } catch (e) {
+    console.error("Erro ao aplicar renovacao no cliente (continuando):", e);
+  }
+
+  // Notificacao (apenas 1x)
+  if (!confirmado.notificado_em) {
+    await notificarVendaAdmin({ tipo: "Pix recebido", pagamento: confirmado, origem, telegramTipo: "pix" });
+    try {
+      await db.query("UPDATE pagamentos SET notificado_em = NOW(), atualizado_em = NOW() WHERE id = $1", [Number(confirmado.id)]);
+      confirmado.notificado_em = new Date();
+    } catch (error) {
+      console.error("Erro ao salvar notificado_em:", error);
+    }
+  }
+
+  return confirmado;
+}
+
 async function sincronizarPagamentoMercadoPago(pagamento) {
   if (!pagamento || pagamento.status === "confirmado" || pagamento.status === "cancelado") {
     return pagamento;
@@ -3427,7 +3458,7 @@ app.post("/webhook", async (req, res) => {
               if (up.rows[0]) {
                 // Se estiver aprovado, agora sim reconcilia/renova/notifica.
                 if (up.rows[0].status === "confirmado") {
-                  await confirmarPagamentoRecebido(up.rows[0], "pix_webhook_import");
+                  await processarPagamentoConfirmado(up.rows[0], "pix_webhook_import");
                 }
               }
             } catch (e) {
