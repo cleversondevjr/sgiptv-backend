@@ -3319,7 +3319,7 @@ app.post("/webhook", async (req, res) => {
 
         const plano = String(mp?.description || "Pagamento PIX (webhook)").trim();
         const valor = Number(mp?.transaction_amount || 0);
-        const email = String(mp?.payer?.email || "").trim() || null;
+        const mpEmail = String(mp?.payer?.email || "").trim().toLowerCase() || null;
         const telefone = null;
 
         const status =
@@ -3329,22 +3329,84 @@ app.post("/webhook", async (req, res) => {
 
         const confirmadoEm = status === "confirmado" ? (mp?.date_approved ? new Date(mp.date_approved) : new Date()) : null;
 
+        // Tentativa de vinculo automatico (modo B): somente se achar 1 cliente exatamente pelo email.
+        // Se encontrar 0 ou mais de 1, mantemos sem vinculo e sem renovar, para evitar vincular errado.
+        let clienteVinculado = null;
+        if (mpEmail) {
+          try {
+            const cRes = await db.query(
+              `
+              SELECT id, usuario, senha, email, telefone
+              FROM clientes
+              WHERE lower(email) = $1
+              ORDER BY atualizado_em DESC, id DESC
+              `,
+              [mpEmail]
+            );
+            if (cRes.rows.length === 1) {
+              clienteVinculado = cRes.rows[0];
+            }
+          } catch (e) {
+            console.error("Erro webhook(auto-import: lookup cliente por email):", e);
+          }
+        }
+
         const insertRes = await db.query(
           `
           INSERT INTO pagamentos (email, telefone, plano, valor, status, payment_id, confirmado_em, origem)
           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
           RETURNING *
           `,
-          [email, telefone, plano, valor, status, String(paymentId), confirmadoEm, "pix_webhook_import"]
+          [
+            // Se conseguimos vincular, gravamos o email/telefone do cadastro; caso contrario, gravamos o email do MP.
+            (clienteVinculado?.email || mpEmail || null),
+            (clienteVinculado?.telefone || null),
+            plano,
+            valor,
+            status,
+            String(paymentId),
+            confirmadoEm,
+            "pix_webhook_import"
+          ]
         );
 
         const salvo = insertRes.rows[0];
         if (salvo) {
-          if (salvo.status === "confirmado") {
-            // Garante renovacao/limpeza/comissao e notifica admin.
-            await confirmarPagamentoRecebido(salvo, "pix_webhook_import");
-          } else {
-            // Mantem pendente/cancelado e deixa o sincronizador/webhook futuro resolver.
+          // Se conseguimos vincular 1:1, completamos o pagamento com usuario/senha e normalizamos o plano
+          // para que a renovacao funcione automaticamente.
+          if (clienteVinculado) {
+            const planoNorm = normalizarNomePlanoParaCliente({ ...salvo, plano: salvo.plano, valor: salvo.valor });
+            try {
+              const up = await db.query(
+                `
+                UPDATE pagamentos
+                SET cliente_usuario = $1,
+                    cliente_senha = $2,
+                    plano = $3,
+                    email = $4,
+                    telefone = $5,
+                    atualizado_em = NOW()
+                WHERE id = $6
+                RETURNING *
+                `,
+                [
+                  String(clienteVinculado.usuario || "").trim() || null,
+                  String(clienteVinculado.senha || "").trim() || null,
+                  planoNorm || salvo.plano,
+                  clienteVinculado.email || salvo.email,
+                  clienteVinculado.telefone || salvo.telefone,
+                  Number(salvo.id)
+                ]
+              );
+              if (up.rows[0]) {
+                // Se estiver aprovado, agora sim reconcilia/renova/notifica.
+                if (up.rows[0].status === "confirmado") {
+                  await confirmarPagamentoRecebido(up.rows[0], "pix_webhook_import");
+                }
+              }
+            } catch (e) {
+              console.error("Erro webhook(auto-import: vincular pagamento ao cliente):", e);
+            }
           }
         }
       } catch (e) {
