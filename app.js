@@ -3299,11 +3299,12 @@ app.post("/webhook", async (req, res) => {
       return res.status(401).json({ error: "Webhook sem autorizacao." });
     }
 
-    const paymentId = req.body?.data?.id;
+    const paymentId = req.body?.data?.id || req.body?.id;
 
     if (!paymentId) return res.sendStatus(200);
 
-    // Confirma via rotina central (marca confirmado_em, notifica, renova cliente).
+    // Primeiro tenta achar no banco; se nao existir (caso real: pagamento feito fora do nosso /pix),
+    // faz um "auto-import" pelo paymentId para o PIX nao sumir do painel/admin.
     const pagamentoResult = await db.query(
       "SELECT * FROM pagamentos WHERE payment_id = $1 ORDER BY id DESC LIMIT 1",
       [String(paymentId)]
@@ -3311,6 +3312,44 @@ app.post("/webhook", async (req, res) => {
 
     if (pagamentoResult.rows.length > 0) {
       await sincronizarPagamentoMercadoPago(pagamentoResult.rows[0]);
+    } else {
+      try {
+        const payment = new Payment(client);
+        const mp = await payment.get({ id: String(paymentId) });
+
+        const plano = String(mp?.description || "Pagamento PIX (webhook)").trim();
+        const valor = Number(mp?.transaction_amount || 0);
+        const email = String(mp?.payer?.email || "").trim() || null;
+        const telefone = null;
+
+        const status =
+          mp?.status === "approved" ? "confirmado" :
+          mp?.status === "cancelled" ? "cancelado" :
+          "pendente";
+
+        const confirmadoEm = status === "confirmado" ? (mp?.date_approved ? new Date(mp.date_approved) : new Date()) : null;
+
+        const insertRes = await db.query(
+          `
+          INSERT INTO pagamentos (email, telefone, plano, valor, status, payment_id, confirmado_em, origem)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+          RETURNING *
+          `,
+          [email, telefone, plano, valor, status, String(paymentId), confirmadoEm, "pix_webhook_import"]
+        );
+
+        const salvo = insertRes.rows[0];
+        if (salvo) {
+          if (salvo.status === "confirmado") {
+            // Garante renovacao/limpeza/comissao e notifica admin.
+            await confirmarPagamentoRecebido(salvo, "pix_webhook_import");
+          } else {
+            // Mantem pendente/cancelado e deixa o sincronizador/webhook futuro resolver.
+          }
+        }
+      } catch (e) {
+        console.error("Erro webhook(auto-import):", e);
+      }
     }
 
     res.sendStatus(200);
