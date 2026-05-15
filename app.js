@@ -2305,8 +2305,10 @@ app.post("/admin/pix/teste", verificarToken, async (req, res) => {
   const plano = `TESTE PIX - ${planoSelecionado.nome}`;
   valor = planoSelecionado.valor;
 
-  const clienteUsuario = String(cliente_usuario || "").trim() || null;
-  const clienteSenha = String(cliente_senha || "").trim() || null;
+  // PIX de teste deve ficar vinculado a um cliente ficticio para facilitar auditoria no painel.
+  // Se o caller nao informar, usamos o padrao (usuario=TESTEPIX, senha=123456).
+  const clienteUsuario = String(cliente_usuario || "TESTEPIX").trim() || null;
+  const clienteSenha = String(cliente_senha || "123456").trim() || null;
 
   try {
     const payment = new Payment(client);
