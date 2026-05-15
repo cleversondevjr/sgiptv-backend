@@ -3329,7 +3329,9 @@ app.post("/webhook", async (req, res) => {
 
         const confirmadoEm = status === "confirmado" ? (mp?.date_approved ? new Date(mp.date_approved) : new Date()) : null;
 
-        // Tentativa de vinculo automatico (modo B): somente se achar 1 cliente exatamente pelo email.
+        // Tentativa de vinculo automatico (modo B):
+        // 1) Se achar 1 cliente exatamente pelo email do Mercado Pago, vincula.
+        // 2) Se o "plano/description" vier no formato "C-<usuario>", tenta vincular por usuario (somente se existir 1 cliente).
         // Se encontrar 0 ou mais de 1, mantemos sem vinculo e sem renovar, para evitar vincular errado.
         let clienteVinculado = null;
         if (mpEmail) {
@@ -3348,6 +3350,30 @@ app.post("/webhook", async (req, res) => {
             }
           } catch (e) {
             console.error("Erro webhook(auto-import: lookup cliente por email):", e);
+          }
+        }
+
+        // Fallback: se a description vier como C-<usuario>, vincula por usuario (1:1).
+        if (!clienteVinculado) {
+          const mUsuario = /^C-(\d+)$/.exec(String(plano || "").trim());
+          const usuarioFromDesc = mUsuario?.[1] ? String(mUsuario[1]).trim() : "";
+          if (usuarioFromDesc) {
+            try {
+              const uRes = await db.query(
+                `
+                SELECT id, usuario, senha, email, telefone
+                FROM clientes
+                WHERE usuario = $1
+                ORDER BY atualizado_em DESC, id DESC
+                `,
+                [usuarioFromDesc]
+              );
+              if (uRes.rows.length === 1) {
+                clienteVinculado = uRes.rows[0];
+              }
+            } catch (e) {
+              console.error("Erro webhook(auto-import: lookup cliente por usuario):", e);
+            }
           }
         }
 
