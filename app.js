@@ -835,8 +835,10 @@ function phoneToBr(phoneDigits) {
 }
 
 async function avisarVencimentosClientes() {
+  // Avisos de vencimento precisam rodar automaticamente (sem depender de login do cliente).
+  // Email e opcional; Telegram deve funcionar mesmo sem SMTP configurado.
   const transporter = criarTransporterEmail();
-  if (!transporter) return;
+  const podeEnviarEmail = Boolean(transporter && ADMIN_EMAIL_VENCIMENTOS);
 
   // Evita spam: envia no maximo 1x por dia por tipo de aviso.
   const result = await db.query(`
@@ -854,12 +856,11 @@ async function avisarVencimentosClientes() {
 
     const diffDias = Math.ceil((venc.getTime() - agora) / umDiaMs);
 
-    const deveAvisar3d = diffDias === 3 && (!c.aviso_3d_em || (agora - new Date(c.aviso_3d_em).getTime()) > umDiaMs);
     const deveAvisar1d = diffDias === 1 && (!c.aviso_1d_em || (agora - new Date(c.aviso_1d_em).getTime()) > umDiaMs);
 
-    if (!deveAvisar3d && !deveAvisar1d) continue;
+    if (!deveAvisar1d) continue;
 
-    const tipo = deveAvisar1d ? "Vencimento em 1 dia" : "Vencimento em 3 dias";
+    const tipo = "Vencimento em 1 dia";
     const nome = String(c.nome || "").trim();
     const texto = `
 ${tipo} - SG IPTV
@@ -874,26 +875,69 @@ WhatsApp: ${c.telefone || "-"}
 Painel Admin: ${ADMIN_PANEL_URL}
     `.trim();
 
-    await transporter.sendMail({
-      from: `"SG IPTV" <${process.env.EMAIL_USER}>`,
-      to: ADMIN_EMAIL_VENCIMENTOS,
-      subject: `${tipo} - ${c.usuario}`,
-      text: texto
-    });
+    // Telegram (principal)
+    await enviarTelegramAvisoAdmin(texto, "vencimento_1d");
 
-    if (deveAvisar1d) {
-      await enviarTelegramAvisoAdmin(texto, "vencimento_1d");
+    // Email (opcional)
+    if (podeEnviarEmail) {
+      try {
+        const baseFrom = String(process.env.EMAIL_FROM || "").trim();
+        const fromEmail =
+          extrairEmailFrom(baseFrom) ||
+          String(process.env.SMTP_USER || process.env.EMAIL_USER || "").trim();
+        const fromName =
+          extrairNomeFrom(baseFrom) ||
+          String(process.env.EMAIL_FROM_NAME || "SG IPTV").trim();
+        const from = fromEmail ? `"${fromName}" <${fromEmail}>` : undefined;
+
+        await transporter.sendMail({
+          ...(from ? { from } : {}),
+          to: ADMIN_EMAIL_VENCIMENTOS,
+          subject: `${tipo} - ${c.usuario}`,
+          text: texto
+        });
+      } catch (error) {
+        console.error("Erro ao enviar email de vencimento (continuando):", error);
+      }
     }
 
     try {
       await db.query(
-        `UPDATE clientes SET ${deveAvisar1d ? "aviso_1d_em" : "aviso_3d_em"} = NOW(), atualizado_em = NOW() WHERE id = $1`,
+        `UPDATE clientes SET aviso_1d_em = NOW(), atualizado_em = NOW() WHERE id = $1`,
         [c.id]
       );
     } catch (error) {
       console.error("Erro ao salvar aviso de vencimento:", error);
     }
   }
+}
+
+// Scheduler: roda avisos de vencimento todo dia as 09:00 (horario local do servidor).
+let ultimoDiaAvisoVencimento = null; // YYYY-MM-DD
+function iniciarSchedulerVencimentos() {
+  const tick = async () => {
+    try {
+      const agora = new Date();
+      const yyyy = String(agora.getFullYear());
+      const mm = String(agora.getMonth() + 1).padStart(2, "0");
+      const dd = String(agora.getDate()).padStart(2, "0");
+      const dia = `${yyyy}-${mm}-${dd}`;
+
+      if (agora.getHours() === 9 && agora.getMinutes() === 0) {
+        if (ultimoDiaAvisoVencimento !== dia) {
+          ultimoDiaAvisoVencimento = dia;
+          await avisarVencimentosClientes();
+        }
+      }
+    } catch (err) {
+      console.error("Erro scheduler vencimentos (continuando):", err);
+    }
+  };
+
+  // checa a cada 60s (suficiente)
+  setInterval(tick, 60 * 1000);
+  // roda uma vez logo ao subir para nao depender do primeiro tick
+  setTimeout(tick, 5 * 1000);
 }
 
 async function enviarEmailVencimentoTeste({ dias, cliente }) {
@@ -4027,6 +4071,9 @@ const PORT = process.env.PORT || 4000;
 
 app.listen(PORT, () => {
   console.log("🚀 Backend rodando na porta", PORT);
+
+  // Scheduler de vencimentos: roda diariamente as 09:00.
+  iniciarSchedulerVencimentos();
 
   // Backfill: garante comissoes para pagamentos confirmados que ficaram sem comissao
   // (por exemplo: pagamento confirmado antes/fora do fluxo normal).
