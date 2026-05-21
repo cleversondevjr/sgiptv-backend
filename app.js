@@ -3370,6 +3370,20 @@ app.post("/pagamentos/dinheiro", verificarToken, async (req, res) => {
       console.error("Erro ao aplicar renovacao no cliente (dinheiro):", e);
     }
 
+    // Notifica admin (telegram/email/whatsapp), assim como no PIX.
+    try {
+      await notificarVendaAdmin({
+        tipo: "Pagamento confirmado (dinheiro)",
+        pagamento: inserted.rows[0],
+        origem: "dinheiro",
+        telegramTipo: "pix"
+      });
+      await db.query("UPDATE pagamentos SET notificado_em = NOW() WHERE id = $1", [Number(inserted.rows[0].id)]);
+      inserted.rows[0].notificado_em = new Date().toISOString();
+    } catch (e) {
+      console.error("Erro ao notificar venda admin (dinheiro):", e);
+    }
+
     return res.json({ ok: true, pagamento: enriquecerPagamento(inserted.rows[0]) });
   } catch (error) {
     console.error("Erro ao confirmar pagamento em dinheiro:", error);
