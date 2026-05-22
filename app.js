@@ -75,6 +75,13 @@ const ADMIN_EMAIL_VENCIMENTOS = "suportesgiptv01@gmail.com";
 const TELEGRAM_TIMEOUT_MS = Number(process.env.TELEGRAM_TIMEOUT_MS || 8000);
 
 const PLANOS = {
+  // Plano tecnico: apenas para testes (PIX de R$ 1,00).
+  teste_1_real: {
+    id: "teste_1_real",
+    nome: "Teste - 1 Real",
+    valor: 1,
+    dias: 0
+  },
   mensal_1_tela: {
     id: "mensal_1_tela",
     nome: "Mensal - 1 Tela",
@@ -2332,7 +2339,7 @@ Painel Admin: ${ADMIN_PANEL_URL}
 });
 
 app.post("/admin/pix/teste", verificarToken, async (req, res) => {
-  let { planoId, valor, email, telefone, cliente_usuario, cliente_senha } = req.body || {};
+  let { planoId, valor, email, telefone, cliente_usuario, cliente_senha, pix_expiracao_minutos } = req.body || {};
   const planoSelecionado = obterPlano(planoId, valor);
 
   if (!planoSelecionado) {
@@ -2356,7 +2363,12 @@ app.post("/admin/pix/teste", verificarToken, async (req, res) => {
 
   try {
     const payment = new Payment(client);
-    const pixExpiraEm = adicionarTempo(new Date(), PIX_EXPIRACAO_MINUTOS, "minutos");
+    const expMin = Number(pix_expiracao_minutos);
+    const minutosExp =
+      Number.isFinite(expMin) && expMin > 0 && expMin <= 24 * 60
+        ? expMin
+        : PIX_EXPIRACAO_MINUTOS;
+    const pixExpiraEm = adicionarTempo(new Date(), minutosExp, "minutos");
 
     const result = await payment.create({
       body: {
@@ -2396,7 +2408,7 @@ app.post("/admin/pix/teste", verificarToken, async (req, res) => {
       qr_base64: data.qr_code_base64,
       payment_id: paymentId,
       pix_expira_em: pixExpiraEm,
-      pix_expiracao_minutos: PIX_EXPIRACAO_MINUTOS
+      pix_expiracao_minutos: minutosExp
     });
   } catch (error) {
     console.error("Erro PIX teste:", error);
